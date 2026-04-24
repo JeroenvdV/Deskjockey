@@ -17,9 +17,7 @@ when you move between desks, docks, or meeting rooms.
 
 ## The Problem
 
-You use your MacBook at multiple locations -- your desk at home, the office, a meeting room.
-Each has a different monitor setup. Every time you plug in, macOS scrambles your display
-arrangement: wrong positions, wrong resolutions, wrong primary display.
+You use your MacBook at multiple desks. All of them have the same monitor. Yet when you plug in to a specific desk for the first time, you get the same old default
 
 You fix it manually in System Settings. Again. And again.
 
