@@ -81,9 +81,22 @@ The menu bar icon tints orange when your current setup is out of sync with the s
 
 ## Install
 
-### Download the .app from the Releases page
+### Homebrew (recommended)
 
-And then just drag it to Applications, launch it and tell it to launch at login from the menu bar icon.
+```bash
+brew tap JeroenvdV/deskjockey
+brew install --cask deskjockey
+```
+
+### Download from GitHub Releases
+
+Download `Deskjockey.zip` from the [Releases page](https://github.com/JeroenvdV/Deskjockey/releases), unzip, move to `/Applications`, then run:
+
+```bash
+xattr -cr /Applications/Deskjockey.app
+```
+
+This is needed because the app is not signed with an Apple Developer ID. Then launch it and click the menu bar icon to enable "Launch at Login".
 
 ### Build from source
 
