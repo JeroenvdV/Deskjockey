@@ -90,8 +90,8 @@ And then just drag it to Applications, launch it and tell it to launch at login 
 Requires Xcode 15+ and macOS 13+.
 
 ```bash
-git clone git@github.com:JeroenvdV/misc.git
-cd misc/deskjockey
+git clone git@github.com:JeroenvdV/Deskjockey.git
+cd Deskjockey
 
 # Generate Xcode project and build
 xcodegen generate
