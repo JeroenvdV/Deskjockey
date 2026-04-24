@@ -111,6 +111,12 @@ final class AppDelegate: NSObject {
         guard let menu = statusItem?.menu else { return }
         menu.removeAllItems()
 
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let versionItem = NSMenuItem(title: "Deskjockey v\(version)", action: nil, keyEquivalent: "")
+        versionItem.isEnabled = false
+        menu.addItem(versionItem)
+        menu.addItem(.separator())
+
         let summaries = coordinator?.displaySummaries() ?? []
         let allMatch = coordinator?.currentSetupMatchesSaved() ?? false
         let hasSaved = coordinator?.hasSavedProfile() ?? false
