@@ -4,8 +4,8 @@
 
 **Your multi-monitor setup, remembered.**
 
-A macOS menu bar utility that automatically saves and restores monitor arrangements
-when you move between desks, docks, or meeting rooms.
+A macOS utility that automatically saves and restores monitor arrangements
+when you move between desks.
 
 [![macOS 13+](https://img.shields.io/badge/macOS-13%2B-blue)](https://github.com/JeroenvdV/misc)
 [![Swift 5.9](https://img.shields.io/badge/Swift-5.9-orange)](https://github.com/JeroenvdV/misc)
@@ -17,14 +17,14 @@ when you move between desks, docks, or meeting rooms.
 
 ## The Problem
 
-You use your MacBook at multiple desks. All of them have the same monitor. Yet when you plug in to a specific desk for the first time, you get the same old default
+You use your MacBook at multiple desks. All of them have the same monitor. Yet when you plug in to a specific desk for the first time, you get the same old defaults, and you've lost the position, resolution and which monitor is main.
 
-You fix it manually in System Settings. Again. And again.
+You fix it manually in System Settings, Again. And again.
 
 ## The Solution
 
 Deskjockey sits in your menu bar and learns your monitor setups. When it recognizes a set of
-the same kinds of monitors you've used before, it restores your saved arrangement automatically -- positions,
+the same kinds of monitors you've used before, it restores your previous arrangement automatically -- positions,
 resolutions, everything. It identifies monitors by model name, not by cable or port, so
 swapping a USB-C side or using a different dock just works.
 
@@ -46,7 +46,7 @@ Plug in monitors
 Deskjockey detects display change
        |
        v
-Builds signature from model names  -->  "Dell U2405x2|MacBook Pro Displayx1"
+Builds signature from model names  -->  "Dell U2405x2 + MacBook Pro Displayx1"
        |
        v
 Saved profile found?
@@ -55,7 +55,7 @@ Saved profile found?
 ```
 
 Profiles are stored as JSON in `~/Library/Application Support/Deskjockey/profiles.json`.
-Logs go to `~/Library/Logs/Deskjockey/deskjockey.log`.
+Logs are in `~/Library/Logs/Deskjockey/deskjockey.log` if you want to see what's happening.
 
 ## Menu Bar
 
@@ -80,6 +80,10 @@ Logs go to `~/Library/Logs/Deskjockey/deskjockey.log`.
 The menu bar icon tints orange when your current setup is out of sync with the saved profile.
 
 ## Install
+
+### Download the .app from the Releases page
+
+And then just drag it to Applications, launch it and tell it to launch at login from the menu bar icon.
 
 ### Build from source
 
