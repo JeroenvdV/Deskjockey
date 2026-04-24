@@ -101,6 +101,7 @@ xcodebuild -project Deskjockey.xcodeproj -scheme Deskjockey -configuration Relea
 cp -R ~/Library/Developer/Xcode/DerivedData/Deskjockey-*/Build/Products/Release/Deskjockey.app /Applications/
 
 # Launch
+killall Deskjockey
 open /Applications/Deskjockey.app
 ```
 
