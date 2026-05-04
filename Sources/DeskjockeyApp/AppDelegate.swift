@@ -219,6 +219,12 @@ final class AppDelegate: NSObject {
         }
     }
 
+    /// Programmatically opens the status item menu (e.g. when the app is relaunched).
+    func showMenu() {
+        guard let button = statusItem?.button else { return }
+        button.performClick(nil)
+    }
+
     // MARK: - Display change handling
 
     private func handleDisplayChange() {
