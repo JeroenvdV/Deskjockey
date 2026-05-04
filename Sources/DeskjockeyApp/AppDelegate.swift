@@ -36,6 +36,10 @@ final class AppDelegate: NSObject {
     private var statusItem: NSStatusItem?
     private var launchAtLoginMenuItem: NSMenuItem?
 
+    /// Timestamp of the last processed display change, persisted across launches.
+    private var lastProcessedAt: Date?
+    private static let lastProcessedKey = "lastProcessedAt"
+
     func start() {
         let store = JSONProfileStore(fileURL: profileFileURL())
         coordinator = DisplayConfigurationCoordinator(
@@ -46,6 +50,7 @@ final class AppDelegate: NSObject {
             reapplyDelayMilliseconds: 1_000
         )
 
+        lastProcessedAt = UserDefaults.standard.object(forKey: Self.lastProcessedKey) as? Date
         configureStatusItem()
         refreshMenu()
 
@@ -100,6 +105,7 @@ final class AppDelegate: NSObject {
         }
 
         item.menu = NSMenu()
+        item.menu?.delegate = self
     }
 
     /// Rebuilds the entire menu from scratch. Called after every state change
@@ -109,24 +115,24 @@ final class AppDelegate: NSObject {
         guard let menu = statusItem?.menu else { return }
         menu.removeAllItems()
 
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-        let versionItem = NSMenuItem(title: "Deskjockey v\(version)", action: nil, keyEquivalent: "")
-        versionItem.isEnabled = false
-        menu.addItem(versionItem)
-        menu.addItem(.separator())
-
         let summaries = coordinator?.displaySummaries() ?? []
         let allMatch = coordinator?.currentSetupMatchesSaved() ?? false
         let hasSaved = coordinator?.hasSavedProfile() ?? false
 
-        // Profile status header
-        let statusTitle: String
+        // Combined profile status + last-processed timestamp
+        var statusTitle: String
         if !hasSaved {
             statusTitle = "No Saved Profile"
         } else if allMatch {
-            statusTitle = "Profile: In Sync"
+            statusTitle = "In Sync"
         } else {
-            statusTitle = "Profile: Out of Sync"
+            statusTitle = "Out of Sync"
+        }
+        if let lastProcessed = lastProcessedAt {
+            let formatter = RelativeDateTimeFormatter()
+            formatter.unitsStyle = .abbreviated
+            let timeAgo = formatter.localizedString(for: lastProcessed, relativeTo: Date())
+            statusTitle += " \u{00b7} last change \(timeAgo)"
         }
         let statusItem = NSMenuItem(title: statusTitle, action: nil, keyEquivalent: "")
         statusItem.isEnabled = false
@@ -163,15 +169,16 @@ final class AppDelegate: NSObject {
             }
         }
 
-        // Actions
+        // Manual operations submenu
         menu.addItem(.separator())
+        let manualMenu = NSMenu()
         let saveItem = NSMenuItem(
             title: "Save Current Setup",
             action: #selector(saveCurrentSetup),
             keyEquivalent: "s"
         )
         saveItem.target = self
-        menu.addItem(saveItem)
+        manualMenu.addItem(saveItem)
 
         let reapplyItem = NSMenuItem(
             title: "Re-apply Saved Setup",
@@ -180,7 +187,11 @@ final class AppDelegate: NSObject {
         )
         reapplyItem.target = self
         reapplyItem.isEnabled = hasSaved
-        menu.addItem(reapplyItem)
+        manualMenu.addItem(reapplyItem)
+
+        let manualItem = NSMenuItem(title: "Manual Operations", action: nil, keyEquivalent: "")
+        manualItem.submenu = manualMenu
+        menu.addItem(manualItem)
 
         // Settings
         menu.addItem(.separator())
@@ -195,8 +206,9 @@ final class AppDelegate: NSObject {
         menu.addItem(launchItem)
 
         menu.addItem(.separator())
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
         let quitItem = NSMenuItem(
-            title: "Quit Deskjockey",
+            title: "Quit Deskjockey v\(version)",
             action: #selector(quit),
             keyEquivalent: "q"
         )
@@ -248,10 +260,12 @@ final class AppDelegate: NSObject {
                 logger.info("Configuration updated by OS")
                 do {
                     try coordinator.captureCurrentSetup()
+                    recordProcessed()
                 } catch {
                     logger.error("Failed to capture setup: \(error)")
                 }
                 refreshMenu()
+                flashStatusIcon()
             }
             return
         }
@@ -268,7 +282,9 @@ final class AppDelegate: NSObject {
             lastTopologyFingerprint = DisplayTopologyFingerprint.from(
                 displays: displayManager.currentDisplays()
             )
+            recordProcessed()
             refreshMenu()
+            flashStatusIcon()
         }
     }
 
@@ -315,6 +331,25 @@ final class AppDelegate: NSObject {
         NSApp.terminate(nil)
     }
 
+    // MARK: - Visual feedback
+
+    /// Briefly flashes the menu bar icon green to confirm a display change was processed.
+    private func flashStatusIcon() {
+        guard let button = statusItem?.button else { return }
+        button.contentTintColor = .systemGreen
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            let allMatch = self?.coordinator?.currentSetupMatchesSaved() ?? false
+            let hasSaved = self?.coordinator?.hasSavedProfile() ?? false
+            self?.updateStatusIcon(inSync: !hasSaved || allMatch)
+        }
+    }
+
+    /// Records the current time as the last-processed timestamp and persists it.
+    private func recordProcessed() {
+        lastProcessedAt = Date()
+        UserDefaults.standard.set(lastProcessedAt, forKey: Self.lastProcessedKey)
+    }
+
     // MARK: - Helpers
 
     private func profileFileURL() -> URL {
@@ -325,5 +360,13 @@ final class AppDelegate: NSObject {
         return supportRoot
             .appendingPathComponent("Deskjockey", isDirectory: true)
             .appendingPathComponent("profiles.json", isDirectory: false)
+    }
+}
+
+// MARK: - NSMenuDelegate
+
+extension AppDelegate: NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) {
+        refreshMenu()
     }
 }

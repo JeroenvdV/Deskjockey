@@ -2,8 +2,10 @@
 
 All notable changes to Deskjockey are documented in this file.
 
-## Unreleased
+## 1.1.0 - 2026-05-04
 
+- Menu bar icon briefly flashes green when a display change is processed
+- New menu item showing how long ago the last display change was processed (e.g. "Processed changes 2 minutes ago"), persisted across launches
 - Removed dark overlay that flashed the screen during display reconfiguration
 - Single-instance enforcement: launching a second instance now signals the running one to show its menu, then exits
 - Added Homebrew tap for installation (`brew tap JeroenvdV/deskjockey`)

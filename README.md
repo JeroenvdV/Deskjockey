@@ -31,9 +31,11 @@ swapping a USB-C side or using a different dock just works.
 ## Features
 
 - **Automatic profile switching** -- detects monitor changes and reapplies your saved layout within seconds.
+- **Visual feedback** -- menu bar icon flashes green when a display change is processed, and the menu shows how long ago the last change was handled.
 - **Per-display sync status** -- see at a glance which monitors match your saved profile and which don't.
 - **Cable/port agnostic** -- matches monitors by model name, not by runtime ID. Move to a different dock or swap cables freely.
 - **Multi-monitor aware** -- handles any number of displays, including duplicate models (e.g. two identical external monitors at different positions).
+- **Single instance** -- launching a second copy signals the running instance to show its menu, then exits.
 - **Menu bar native** -- lives in your menu bar with a single icon. No windows, no Dock clutter.
 - **Launch at Login** -- set it and forget it.
 
@@ -61,23 +63,22 @@ Logs are in `~/Library/Logs/Deskjockey/deskjockey.log` if you want to see what's
 
 ```
   ┌──────────────────────────────────────────────┐
-  │  Profile: In Sync                            │
+  │  In Sync · last change 5 min. ago            │
   │──────────────────────────────────────────────│
   │  Displays (3)                                │
   │  ✓  MacBook Pro Display (built-in)  1728x1117│
   │  ✓  Dell U2405                      1920x1200│
   │  ✓  Dell U2405                      1920x1200│
   │──────────────────────────────────────────────│
-  │  Save Current Setup                     ⌘S   │
-  │  Re-apply Saved Setup                   ⌘R   │
+  │  Manual Operations                        ▶  │
   │──────────────────────────────────────────────│
   │  ✓  Launch at Login                          │
   │──────────────────────────────────────────────│
-  │  Quit Deskjockey                        ⌘Q   │
+  │  Quit Deskjockey v1.1.0                 ⌘Q   │
   └──────────────────────────────────────────────┘
 ```
 
-The menu bar icon tints orange when your current setup is out of sync with the saved profile.
+The menu bar icon flashes green when a display change is processed, and tints orange when your current setup is out of sync with the saved profile.
 
 ## Install
 
@@ -144,7 +145,7 @@ DeskjockeyCore (framework, platform-independent)
 DeskjockeyApp (macOS app target)
 ├── DeskjockeyAppMain.swift    # App entry point
 ├── AppDelegate.swift        # Menu bar UI, display change handling
-└── Runtime.swift            # CoreGraphics display manager, overlay, login items
+└── Runtime.swift            # CoreGraphics display manager, login items
 ```
 
 `DeskjockeyCore` contains all logic and is fully testable with mocks -- no AppKit or CoreGraphics
