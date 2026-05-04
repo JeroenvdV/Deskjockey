@@ -25,7 +25,6 @@ public struct TaskSleepManager: SleepManaging {
 public final class DisplayConfigurationCoordinator {
     private let displayManager: DisplayManaging
     private let profileStore: MonitorProfileStoring
-    private let overlayManager: OverlayManaging
     private let sleepManager: SleepManaging
     private let logger: Logger
     private let reapplyDelayMilliseconds: UInt64
@@ -34,7 +33,6 @@ public final class DisplayConfigurationCoordinator {
     public init(
         displayManager: DisplayManaging,
         profileStore: MonitorProfileStoring,
-        overlayManager: OverlayManaging,
         logger: Logger = NullLogger(),
         sleepManager: SleepManaging = TaskSleepManager(),
         reapplyDelayMilliseconds: UInt64 = 1_000,
@@ -42,7 +40,6 @@ public final class DisplayConfigurationCoordinator {
     ) {
         self.displayManager = displayManager
         self.profileStore = profileStore
-        self.overlayManager = overlayManager
         self.logger = logger
         self.sleepManager = sleepManager
         self.reapplyDelayMilliseconds = reapplyDelayMilliseconds
@@ -90,11 +87,6 @@ public final class DisplayConfigurationCoordinator {
             logger.info("No saved profile for signature \(signature.rawValue)")
             return
         }
-
-        // Show a dark overlay while applying changes to mask visual glitches
-        // as displays reposition. Auto-dismissed after timeout as a safety net.
-        overlayManager.show(timeoutSeconds: 5.0)
-        defer { overlayManager.hide() }
 
         let pairs = DisplayMatcher.pair(liveDisplays: displays, profileSlots: profile.slots)
         logger.info("Applying profile with \(pairs.count) display(s)")

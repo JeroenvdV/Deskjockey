@@ -36,49 +36,6 @@ final class DisplayChangeObserver {
     }
 }
 
-final class DarkOverlayManager: OverlayManaging {
-    private var overlayWindows: [NSWindow] = []
-
-    func show(timeoutSeconds: TimeInterval) {
-        // Show synchronously so the overlay is visible before display apply begins.
-        if Thread.isMainThread {
-            showImmediately()
-        } else {
-            DispatchQueue.main.sync { self.showImmediately() }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + timeoutSeconds) { [weak self] in
-            self?.hide()
-        }
-    }
-
-    private func showImmediately() {
-        guard overlayWindows.isEmpty else { return }
-        for screen in NSScreen.screens {
-            let window = NSWindow(
-                contentRect: screen.frame,
-                styleMask: [.borderless],
-                backing: .buffered,
-                defer: false,
-                screen: screen
-            )
-            window.isOpaque = true
-            window.backgroundColor = NSColor(calibratedWhite: 0.15, alpha: 1.0)
-            window.level = .screenSaver
-            window.ignoresMouseEvents = true
-            window.collectionBehavior = [.canJoinAllSpaces, .stationary]
-            window.makeKeyAndOrderFront(nil)
-            overlayWindows.append(window)
-        }
-    }
-
-    func hide() {
-        DispatchQueue.main.async {
-            self.overlayWindows.forEach { $0.orderOut(nil) }
-            self.overlayWindows.removeAll()
-        }
-    }
-}
-
 enum LoginItemError: Error {
     case unsupported
 }

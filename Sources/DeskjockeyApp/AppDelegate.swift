@@ -12,7 +12,6 @@ import DeskjockeyCore
 @MainActor
 final class AppDelegate: NSObject {
     private let displayManager = MacDisplayManager()
-    private let overlayManager = DarkOverlayManager()
     private let sleepManager = TaskSleepManager()
     private let logger: Logger = FileLogger()
     private let loginItemManager = LoginItemManager()
@@ -42,7 +41,6 @@ final class AppDelegate: NSObject {
         coordinator = DisplayConfigurationCoordinator(
             displayManager: displayManager,
             profileStore: store,
-            overlayManager: overlayManager,
             logger: logger,
             sleepManager: sleepManager,
             reapplyDelayMilliseconds: 1_000

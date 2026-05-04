@@ -22,7 +22,6 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         let coordinator = DisplayConfigurationCoordinator(
             displayManager: displayManager,
             profileStore: store,
-            overlayManager: NoopOverlayManager(),
             sleepManager: ImmediateSleepManager(),
             reapplyDelayMilliseconds: 0
         )
@@ -40,7 +39,6 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
 
     func testReapplyMatchesNewRuntimeIDsForIdenticalHardware() async throws {
         let store = InMemoryProfileStore()
-        let overlay = RecordingOverlayManager()
 
         let originalLeft = DisplaySnapshot(
             runtimeID: "ORIG-LEFT",
@@ -60,7 +58,6 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         let captureCoordinator = DisplayConfigurationCoordinator(
             displayManager: captureManager,
             profileStore: store,
-            overlayManager: overlay,
             sleepManager: ImmediateSleepManager(),
             reapplyDelayMilliseconds: 0
         )
@@ -85,15 +82,12 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         let reapplyCoordinator = DisplayConfigurationCoordinator(
             displayManager: reapplyManager,
             profileStore: store,
-            overlayManager: overlay,
             sleepManager: ImmediateSleepManager(),
             reapplyDelayMilliseconds: 0
         )
 
         await reapplyCoordinator.monitorSetDidChange()
 
-        XCTAssertEqual(overlay.showCallCount, 1)
-        XCTAssertEqual(overlay.hideCallCount, 1)
         XCTAssertEqual(reapplyManager.applied.count, 2)
 
         let appliedByRuntime = Dictionary(uniqueKeysWithValues: reapplyManager.applied.map { ($0.runtimeID, $0) })
@@ -114,11 +108,9 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
             )
         ])
         let store = InMemoryProfileStore()
-        let overlay = RecordingOverlayManager()
         let coordinator = DisplayConfigurationCoordinator(
             displayManager: manager,
             profileStore: store,
-            overlayManager: overlay,
             sleepManager: ImmediateSleepManager(),
             reapplyDelayMilliseconds: 0
         )
@@ -126,8 +118,6 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         await coordinator.monitorSetDidChange()
 
         XCTAssertEqual(manager.applied.count, 0)
-        XCTAssertEqual(overlay.showCallCount, 0)
-        XCTAssertEqual(overlay.hideCallCount, 0)
     }
 
     func testCaptureOverwritesExistingProfileForSameModelSet() throws {
@@ -143,7 +133,6 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         let coordinator = DisplayConfigurationCoordinator(
             displayManager: manager,
             profileStore: store,
-            overlayManager: NoopOverlayManager(),
             sleepManager: ImmediateSleepManager(),
             reapplyDelayMilliseconds: 0
         )
@@ -176,7 +165,6 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         let coordinator = DisplayConfigurationCoordinator(
             displayManager: manager,
             profileStore: store,
-            overlayManager: NoopOverlayManager(),
             sleepManager: ImmediateSleepManager(),
             reapplyDelayMilliseconds: 0
         )
@@ -200,7 +188,6 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         let coordinator = DisplayConfigurationCoordinator(
             displayManager: manager,
             profileStore: store,
-            overlayManager: NoopOverlayManager(),
             sleepManager: ImmediateSleepManager(),
             reapplyDelayMilliseconds: 0
         )
@@ -222,7 +209,6 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         let coordinator = DisplayConfigurationCoordinator(
             displayManager: manager,
             profileStore: store,
-            overlayManager: NoopOverlayManager(),
             sleepManager: ImmediateSleepManager(),
             reapplyDelayMilliseconds: 0
         )
@@ -251,7 +237,6 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         let coordinator = DisplayConfigurationCoordinator(
             displayManager: manager,
             profileStore: store,
-            overlayManager: NoopOverlayManager(),
             sleepManager: ImmediateSleepManager(),
             reapplyDelayMilliseconds: 0
         )
@@ -277,7 +262,6 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         let coordinator = DisplayConfigurationCoordinator(
             displayManager: manager,
             profileStore: store,
-            overlayManager: NoopOverlayManager(),
             sleepManager: ImmediateSleepManager(),
             reapplyDelayMilliseconds: 0
         )
@@ -305,7 +289,6 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         let coordinator = DisplayConfigurationCoordinator(
             displayManager: manager,
             profileStore: store,
-            overlayManager: NoopOverlayManager(),
             sleepManager: ImmediateSleepManager(),
             reapplyDelayMilliseconds: 0
         )
@@ -334,11 +317,9 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
     func testNoDisplaysMeansNoReapply() async {
         let manager = MockDisplayManager(displays: [])
         let store = InMemoryProfileStore()
-        let overlay = RecordingOverlayManager()
         let coordinator = DisplayConfigurationCoordinator(
             displayManager: manager,
             profileStore: store,
-            overlayManager: overlay,
             sleepManager: ImmediateSleepManager(),
             reapplyDelayMilliseconds: 0
         )
@@ -346,7 +327,6 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         await coordinator.monitorSetDidChange()
 
         XCTAssertEqual(manager.applied.count, 0)
-        XCTAssertEqual(overlay.showCallCount, 0)
     }
 }
 
@@ -376,24 +356,6 @@ private final class InMemoryProfileStore: MonitorProfileStoring {
 
     func saveProfiles(_ profiles: [MonitorSetProfile]) throws {
         self.profiles = profiles
-    }
-}
-
-private final class NoopOverlayManager: OverlayManaging {
-    func show(timeoutSeconds: TimeInterval) {}
-    func hide() {}
-}
-
-private final class RecordingOverlayManager: OverlayManaging {
-    var showCallCount = 0
-    var hideCallCount = 0
-
-    func show(timeoutSeconds: TimeInterval) {
-        showCallCount += 1
-    }
-
-    func hide() {
-        hideCallCount += 1
     }
 }
 

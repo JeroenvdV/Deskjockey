@@ -11,12 +11,6 @@ public protocol DisplayManaging {
     func apply(configuration: DisplayConfiguration, to display: DisplaySnapshot) throws
 }
 
-/// Shows/hides a temporary overlay during display reconfiguration to mask visual glitches.
-public protocol OverlayManaging {
-    func show(timeoutSeconds: TimeInterval)
-    func hide()
-}
-
 public protocol Logger {
     func info(_ message: String)
     func warn(_ message: String)
