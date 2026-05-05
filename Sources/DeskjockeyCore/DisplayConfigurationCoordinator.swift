@@ -91,6 +91,9 @@ public final class DisplayConfigurationCoordinator {
         let pairs = DisplayMatcher.pair(liveDisplays: displays, profileSlots: profile.slots)
         logger.info("Applying profile with \(pairs.count) display(s)")
 
+        // Update lastUsedAt for this profile
+        recordProfileUsed()
+
         for pair in pairs {
             let displayLabel = Self.label(for: pair.display)
             let targetOrigin = "(\(pair.slot.targetFrame.origin.x), \(pair.slot.targetFrame.origin.y))"
@@ -141,6 +144,7 @@ public final class DisplayConfigurationCoordinator {
         }
 
         let signature = MonitorSetSignature.from(displays: displays)
+        let resolutionSignature = ResolutionSetSignature.from(displays: displays)
         let slots = SlotPlanner.indexedSlots(for: displays)
             .flatMap { modelName, indexed in
                 indexed.map { item in
@@ -157,7 +161,13 @@ public final class DisplayConfigurationCoordinator {
                 return $0.slotIndex < $1.slotIndex
             }
 
-        let newProfile = MonitorSetProfile(signature: signature, slots: slots, updatedAt: now())
+        let newProfile = MonitorSetProfile(
+            signature: signature,
+            slots: slots,
+            updatedAt: now(),
+            lastUsedAt: nil,
+            resolutionSignature: resolutionSignature
+        )
 
         do {
             var profiles = try profileStore.loadProfiles()
@@ -248,5 +258,186 @@ public final class DisplayConfigurationCoordinator {
         let summaries = displaySummaries()
         guard !summaries.isEmpty else { return false }
         return summaries.allSatisfy(\.matchesSaved)
+    }
+
+    // MARK: - Copy Similar Setup
+
+    /// Returns profiles that match the current display setup's resolution signature.
+    /// Used for the "Copy Similar Setup" feature. Only returns profiles that have
+    /// a matching resolution signature but a different model signature.
+    public func findProfilesMatchingResolutionSignature() -> [MonitorSetProfile] {
+        let currentDisplays = displayManager.currentDisplays()
+        guard !currentDisplays.isEmpty else {
+            return []
+        }
+
+        let currentResolutionSignature = ResolutionSetSignature.from(displays: currentDisplays)
+        let currentModelSignature = MonitorSetSignature.from(displays: currentDisplays)
+
+        let allProfiles = (try? profileStore.loadProfiles()) ?? []
+
+        // Find profiles with matching resolution signature but different model signature
+        return allProfiles.filter { profile in
+            profile.resolutionSignature == currentResolutionSignature
+                && profile.signature != currentModelSignature
+        }
+    }
+
+    /// Copies a profile's slots to create a new profile for the current monitor set.
+    /// This is used for the "Copy Similar Setup" feature when you connect to a new
+    /// setup that has the same native resolutions as an existing setup.
+    /// 
+    /// - Parameter sourceProfile: The profile to copy slots from
+    /// - Throws: ProfileError if no displays are connected
+    public func copyProfileFromSimilarSetup(sourceProfile: MonitorSetProfile) throws {
+        let displays = displayManager.currentDisplays()
+        guard !displays.isEmpty else {
+            throw ProfileError.noDisplaysConnected
+        }
+
+        let currentSignature = MonitorSetSignature.from(displays: displays)
+        let currentResolutionSignature = ResolutionSetSignature.from(displays: displays)
+
+        // Sort both the source slots and current displays by position
+        let sortedSourceSlots = sourceProfile.slots.sorted {
+            if $0.targetFrame.origin.x != $1.targetFrame.origin.x {
+                return $0.targetFrame.origin.x < $1.targetFrame.origin.x
+            }
+            return $0.targetFrame.origin.y < $1.targetFrame.origin.y
+        }
+
+        let sortedDisplays = displays.sorted {
+            if $0.frame.origin.x != $1.frame.origin.x {
+                return $0.frame.origin.x < $1.frame.origin.x
+            }
+            return $0.frame.origin.y < $1.frame.origin.y
+        }
+
+        // Create new slots by mapping source slots to current displays by position
+        // This assumes displays are in the same relative positions
+        let slots: [MonitorSlotProfile]
+        if sortedSourceSlots.count == sortedDisplays.count {
+            slots = zip(sortedSourceSlots, sortedDisplays).map { (sourceSlot, display) in
+                MonitorSlotProfile(
+                    modelName: display.normalizedModelName,
+                    slotIndex: sourceSlot.slotIndex,
+                    targetFrame: sourceSlot.targetFrame,
+                    targetResolution: sourceSlot.targetResolution
+                )
+            }
+        } else {
+            // Fallback: use current display positions but try to match by resolution
+            // Pair displays with source slots that have the same target resolution
+            slots = sortedDisplays.enumerated().map { index, display in
+                let matchingSlot = sortedSourceSlots.first { $0.targetResolution == display.resolution }
+                return MonitorSlotProfile(
+                    modelName: display.normalizedModelName,
+                    slotIndex: index,
+                    targetFrame: matchingSlot?.targetFrame ?? display.frame,
+                    targetResolution: matchingSlot?.targetResolution ?? display.resolution
+                )
+            }
+        }
+
+        let newProfile = MonitorSetProfile(
+            signature: currentSignature,
+            slots: slots,
+            updatedAt: now(),
+            lastUsedAt: nil,
+            resolutionSignature: currentResolutionSignature
+        )
+
+        // Save the new profile
+        do {
+            var profiles = try profileStore.loadProfiles()
+            profiles.removeAll { $0.signature == currentSignature }
+            profiles.append(newProfile)
+            try profileStore.saveProfiles(profiles)
+            logger.info("Copied profile from similar setup with signature: \(sourceProfile.signature.rawValue)")
+        } catch {
+            logger.error("Failed to save copied profile: \(error)")
+            throw ProfileError.storageFailure(underlying: error)
+        }
+    }
+
+    /// Returns the most recently used profile that matches the current resolution signature.
+    /// Used for the "Copy Similar Setup" feature.
+    public func findMostRecentMatchingProfileByResolution() -> MonitorSetProfile? {
+        let matchingProfiles = findProfilesMatchingResolutionSignature()
+        
+        // Sort by lastUsedAt descending, then by updatedAt descending
+        let sorted = matchingProfiles.sorted { lhs, rhs in
+            let lhsDate = lhs.lastUsedAt ?? lhs.updatedAt
+            let rhsDate = rhs.lastUsedAt ?? rhs.updatedAt
+            return lhsDate > rhsDate
+        }
+        
+        return sorted.first
+    }
+
+    /// Checks if there's at least one profile that matches the current resolution signature.
+    public func hasSimilarSetupByResolution() -> Bool {
+        return !findProfilesMatchingResolutionSignature().isEmpty
+    }
+
+    // MARK: - Profile Usage Tracking
+
+    /// Updates the lastUsedAt date for the profile matching the current signature.
+    /// Called when a profile is successfully applied.
+    public func recordProfileUsed() {
+        guard let currentSignature = currentSignature() else { return }
+        
+        do {
+            var profiles = try profileStore.loadProfiles()
+            if let index = profiles.firstIndex(where: { $0.signature == currentSignature }) {
+                profiles[index].lastUsedAt = now()
+                // Also ensure resolution signature is set for backward compatibility
+                if profiles[index].resolutionSignatureRawValue == nil {
+                    let displays = displayManager.currentDisplays()
+                    let resolutionSignature = ResolutionSetSignature.from(displays: displays)
+                    profiles[index].resolutionSignatureRawValue = resolutionSignature.rawValue
+                }
+                try profileStore.saveProfiles(profiles)
+            }
+        } catch {
+            logger.error("Failed to update profile usage: \(error)")
+        }
+    }
+
+    /// Migrates existing profiles to add resolution signatures if they don't have them.
+    /// Ensures backward compatibility with older config files.
+    public func migrateProfilesIfNeeded() {
+        do {
+            var profiles = try profileStore.loadProfiles()
+            var needsSave = false
+            
+            for i in 0..<profiles.count {
+                if profiles[i].resolutionSignatureRawValue == nil {
+                    // We can't compute the resolution signature without the original displays,
+                    // but we can set it based on the slots' resolutions
+                    let resolutionCounts = Dictionary(grouping: profiles[i].slots, by: { $0.targetResolution })
+                        .mapValues { $0.count }
+                    let sortedResolutions = resolutionCounts.keys.sorted { lhs, rhs in
+                        let lhsArea = lhs.width * lhs.height
+                        let rhsArea = rhs.width * rhs.height
+                        if lhsArea != rhsArea { return lhsArea > rhsArea }
+                        if lhs.width != rhs.width { return lhs.width > rhs.width }
+                        return lhs.height > rhs.height
+                    }
+                    let signature = ResolutionSetSignature(rawValue: sortedResolutions.map { 
+                        "\($0.width)x\($0.height)x\(resolutionCounts[$0] ?? 0)" 
+                    }.joined(separator: "|"))
+                    profiles[i].resolutionSignatureRawValue = signature.rawValue
+                    needsSave = true
+                }
+            }
+            
+            if needsSave {
+                try profileStore.saveProfiles(profiles)
+                logger.info("Migrated profiles to add resolution signatures")
+            }
+        } catch {
+            logger.error("Failed to migrate profiles: \(error)")
+        }
     }
 }

@@ -136,6 +136,33 @@ public struct DisplayTopologyFingerprint: Hashable, Sendable {
     }
 }
 
+/// Identifies a set of monitors by their native resolutions and count, ignoring
+/// model names, runtime IDs, cable order, and port assignment. Used for the
+/// "Copy Similar Setup" feature to find profiles with matching display resolutions.
+/// Example: "1920x1200x1|1728x1117x1"
+public struct ResolutionSetSignature: Codable, Hashable, Sendable {
+    public var rawValue: String
+
+    public init(rawValue: String) {
+        self.rawValue = rawValue
+    }
+
+    public static func from(displays: [DisplaySnapshot]) -> ResolutionSetSignature {
+        let counts = Dictionary(grouping: displays, by: { $0.resolution }).mapValues { $0.count }
+        let normalized = counts.keys.sorted { lhs, rhs in
+            // Sort by area (width * height) descending, then by width descending
+            let lhsArea = lhs.width * lhs.height
+            let rhsArea = rhs.width * rhs.height
+            if lhsArea != rhsArea { return lhsArea > rhsArea }
+            if lhs.width != rhs.width { return lhs.width > rhs.width }
+            return lhs.height > rhs.height
+        }.map { resolution in
+            "\(resolution.width)x\(resolution.height)x\(counts[resolution] ?? 0)"
+        }
+        return .init(rawValue: normalized.joined(separator: "|"))
+    }
+}
+
 // MARK: - Profile storage types
 
 /// A single display's saved arrangement within a profile. Identified by model name
@@ -166,15 +193,30 @@ public struct MonitorSetProfile: Codable, Hashable, Sendable {
     public var signatureRawValue: String
     public var slots: [MonitorSlotProfile]
     public var updatedAt: Date
+    public var lastUsedAt: Date?
+    public var resolutionSignatureRawValue: String?
 
-    public init(signature: MonitorSetSignature, slots: [MonitorSlotProfile], updatedAt: Date = Date()) {
+    public init(
+        signature: MonitorSetSignature,
+        slots: [MonitorSlotProfile],
+        updatedAt: Date = Date(),
+        lastUsedAt: Date? = nil,
+        resolutionSignature: ResolutionSetSignature? = nil
+    ) {
         self.signatureRawValue = signature.rawValue
         self.slots = slots
         self.updatedAt = updatedAt
+        self.lastUsedAt = lastUsedAt
+        self.resolutionSignatureRawValue = resolutionSignature?.rawValue
     }
 
     public var signature: MonitorSetSignature {
         MonitorSetSignature(rawValue: signatureRawValue)
+    }
+
+    public var resolutionSignature: ResolutionSetSignature? {
+        guard let rawValue = resolutionSignatureRawValue else { return nil }
+        return ResolutionSetSignature(rawValue: rawValue)
     }
 }
 

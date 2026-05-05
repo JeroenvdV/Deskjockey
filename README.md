@@ -38,6 +38,8 @@ swapping a USB-C side or using a different dock just works.
 - **Single instance** -- launching a second copy signals the running instance to show its menu, then exits.
 - **Menu bar native** -- lives in your menu bar with a single icon. No windows, no Dock clutter.
 - **Launch at Login** -- set it and forget it.
+- **Copy Similar Setup** -- when you connect to a new setup with the same native resolutions as a previously saved setup, you can copy that configuration. The most recently used matching setup is offered. Only available when a matching setup exists.
+- **Open Config File** -- open the JSON configuration file directly from the menu bar to edit it manually. The app automatically reloads the configuration after external changes.
 
 ## How It Works
 
@@ -59,6 +61,21 @@ Saved profile found?
 Profiles are stored as JSON in `~/Library/Application Support/Deskjockey/profiles.json`.
 Logs are in `~/Library/Logs/Deskjockey/deskjockey.log` if you want to see what's happening.
 
+## Copy Similar Setup
+
+When you connect to a new desk where the monitors have the same native resolutions
+as a setup you've previously saved, Deskjockey can copy that configuration to your
+new setup. This is useful when:
+
+- You have identical monitors at different desks
+- You swap monitors but keep the same models
+- You want to quickly apply a known-good configuration
+
+The app automatically identifies matching setups by comparing native resolutions
+(rather than model names). If multiple setups match, the most recently used one
+is offered. The "Copy Similar Setup" menu option is only enabled when a matching
+setup is available.
+
 ## Menu Bar
 
 ```
@@ -72,9 +89,11 @@ Logs are in `~/Library/Logs/Deskjockey/deskjockey.log` if you want to see what's
   │──────────────────────────────────────────────│
   │  Manual Operations                        ▶  │
   │──────────────────────────────────────────────│
+  │  Open Config File                            │
+  │──────────────────────────────────────────────│
   │  ✓  Launch at Login                          │
   │──────────────────────────────────────────────│
-  │  Quit Deskjockey v1.1.0                 ⌘Q   │
+  │  Quit Deskjockey v1.2.0                 ⌘Q   │
   └──────────────────────────────────────────────┘
 ```
 

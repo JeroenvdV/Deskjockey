@@ -39,6 +39,7 @@ targets:
         INFOPLIST_KEY_LSUIElement: true
         INFOPLIST_KEY_NSHighResolutionCapable: true
         INFOPLIST_KEY_CFBundleDisplayName: Deskjockey
+        INFOPLIST_KEY_CFBundleIconFile: Deskjockey.icns
         LD_RUNPATH_SEARCH_PATHS:
           - "@executable_path/../Frameworks"
         MARKETING_VERSION: "1.1.0"

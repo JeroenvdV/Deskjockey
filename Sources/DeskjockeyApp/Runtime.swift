@@ -3,6 +3,75 @@ import CoreGraphics
 import Foundation
 import DeskjockeyCore
 import ServiceManagement
+import Darwin
+
+// MARK: - File Watcher
+
+/// Simple file system watcher that notifies when files in a directory change.
+/// Uses DispatchSource to monitor the directory for write events.
+final class FileWatcher {
+    private let directory: URL
+    private let queue: DispatchQueue
+    private var source: DispatchSourceFileSystemObject?
+    private var descriptor: Int32 = -1
+    private let callback: (FileChangeEvent) -> Void
+
+    struct FileChangeEvent {
+        let path: String
+    }
+
+    init(directory: URL, callback: @escaping (FileChangeEvent) -> Void) {
+        self.directory = directory
+        self.queue = DispatchQueue(label: "com.deskjockey.filewatcher", attributes: .concurrent)
+        self.callback = callback
+
+        startWatching()
+    }
+
+    deinit {
+        stopWatching()
+    }
+
+    private func startWatching() {
+        descriptor = open(directory.path, O_EVTONLY)
+        guard descriptor != -1 else { return }
+
+        source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: .write,
+            queue: queue
+        )
+
+        source?.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            self.handleFileSystemEvent()
+        }
+
+        source?.setCancelHandler { [weak self] in
+            guard let self = self else { return }
+            close(self.descriptor)
+            self.descriptor = -1
+        }
+
+        source?.resume()
+    }
+
+    private func stopWatching() {
+        source?.cancel()
+        if descriptor != -1 {
+            close(descriptor)
+            descriptor = -1
+        }
+    }
+
+    private func handleFileSystemEvent() {
+        // Read the directory to see which files changed
+        // For simplicity, we'll just notify that something changed
+        // In a more sophisticated implementation, we'd track specific files
+        let event = FileChangeEvent(path: directory.appendingPathComponent("profiles.json").path)
+        callback(event)
+    }
+}
 
 /// Registers for CGDisplayReconfigurationCallback and forwards events to the main queue.
 /// The callback fires for every display change (resolution, arrangement, plug/unplug),

@@ -35,6 +35,7 @@ final class AppDelegate: NSObject {
 
     private var statusItem: NSStatusItem?
     private var launchAtLoginMenuItem: NSMenuItem?
+    private var configFileWatcher: FileWatcher?
 
     /// Timestamp of the last processed display change, persisted across launches.
     private var lastProcessedAt: Date?
@@ -50,9 +51,15 @@ final class AppDelegate: NSObject {
             reapplyDelayMilliseconds: 1_000
         )
 
+        // Migrate existing profiles to add resolution signatures if needed
+        coordinator?.migrateProfilesIfNeeded()
+
         lastProcessedAt = UserDefaults.standard.object(forKey: Self.lastProcessedKey) as? Date
         configureStatusItem()
         refreshMenu()
+
+        // Set up file watcher for config file changes
+        setupConfigFileWatcher()
 
         let currentDisplays = displayManager.currentDisplays()
         guard !currentDisplays.isEmpty else {
@@ -87,6 +94,51 @@ final class AppDelegate: NSObject {
 
         displayObserver = DisplayChangeObserver { [weak self] in
             self?.handleDisplayChange()
+        }
+    }
+
+    // MARK: - Config File Watcher
+
+    private func setupConfigFileWatcher() {
+        let fileURL = profileFileURL()
+        
+        // Watch the parent directory for changes
+        let parentURL = fileURL.deletingLastPathComponent()
+        
+        configFileWatcher = FileWatcher(directory: parentURL) { [weak self] event in
+            guard let self = self else { return }
+            
+            // Check if the profiles.json file was modified
+            if event.path == fileURL.path {
+                DispatchQueue.main.async {
+                    self.logger.info("Config file changed externally, reloading...")
+                    self.reloadProfiles()
+                }
+            }
+        }
+    }
+
+    private func reloadProfiles() {
+        do {
+            // Force reload of profiles from disk
+            let store = JSONProfileStore(fileURL: profileFileURL())
+            let profiles = try store.loadProfiles()
+            
+            // Create a new coordinator with the same dependencies but fresh state
+            // This ensures we pick up any external changes
+            coordinator = DisplayConfigurationCoordinator(
+                displayManager: displayManager,
+                profileStore: store,
+                logger: logger,
+                sleepManager: sleepManager,
+                reapplyDelayMilliseconds: 1_000,
+                now: Date.init
+            )
+            
+            logger.info("Profiles reloaded, found \(profiles.count) profile(s)")
+            refreshMenu()
+        } catch {
+            logger.error("Failed to reload profiles: \(error)")
         }
     }
 
@@ -189,9 +241,29 @@ final class AppDelegate: NSObject {
         reapplyItem.isEnabled = hasSaved
         manualMenu.addItem(reapplyItem)
 
+        let copySimilarItem = NSMenuItem(
+            title: "Copy Similar Setup",
+            action: #selector(copySimilarSetup),
+            keyEquivalent: ""
+        )
+        copySimilarItem.target = self
+        let hasSimilar = coordinator?.hasSimilarSetupByResolution() ?? false
+        copySimilarItem.isEnabled = hasSimilar
+        manualMenu.addItem(copySimilarItem)
+
         let manualItem = NSMenuItem(title: "Manual Operations", action: nil, keyEquivalent: "")
         manualItem.submenu = manualMenu
         menu.addItem(manualItem)
+
+        // Open config file
+        menu.addItem(.separator())
+        let openConfigItem = NSMenuItem(
+            title: "Open Config File",
+            action: #selector(openConfigFile),
+            keyEquivalent: ""
+        )
+        openConfigItem.target = self
+        menu.addItem(openConfigItem)
 
         // Settings
         menu.addItem(.separator())
@@ -312,6 +384,30 @@ final class AppDelegate: NSObject {
             isApplyingProfile = false
             refreshMenu()
         }
+    }
+
+    @objc
+    private func copySimilarSetup() {
+        guard let coordinator else { return }
+        
+        logger.info("User requested copy similar setup")
+        
+        do {
+            if let sourceProfile = coordinator.findMostRecentMatchingProfileByResolution() {
+                try coordinator.copyProfileFromSimilarSetup(sourceProfile: sourceProfile)
+                logger.info("Copied setup from similar profile")
+            }
+            refreshMenu()
+        } catch {
+            logger.error("Failed to copy similar setup: \(error)")
+        }
+    }
+
+    @objc
+    private func openConfigFile() {
+        let url = profileFileURL()
+        logger.info("Opening config file at: \(url.path)")
+        NSWorkspace.shared.open(url)
     }
 
     @objc

@@ -328,6 +328,160 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(manager.applied.count, 0)
     }
+
+    func testCopySimilarSetupCreatesNewProfileFromMatchingResolution() throws {
+        let store = InMemoryProfileStore()
+
+        // First, create a profile for one setup
+        let originalDisplay = DisplaySnapshot(
+            runtimeID: "ORIG-1",
+            modelName: "Dell U2405",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1200)),
+            resolution: .init(width: 1920, height: 1200)
+        )
+        let captureManager = MockDisplayManager(displays: [originalDisplay])
+        let captureCoordinator = DisplayConfigurationCoordinator(
+            displayManager: captureManager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+        try captureCoordinator.captureCurrentSetup()
+
+        // Now switch to a different setup with the same resolution but different model
+        let newDisplay = DisplaySnapshot(
+            runtimeID: "NEW-1",
+            modelName: "HP Monitor",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1200)),
+            resolution: .init(width: 1920, height: 1200)
+        )
+        let newManager = MockDisplayManager(displays: [newDisplay])
+        let newCoordinator = DisplayConfigurationCoordinator(
+            displayManager: newManager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+
+        // Check that we have a matching resolution profile
+        XCTAssertTrue(newCoordinator.hasSimilarSetupByResolution())
+
+        // Copy the similar setup
+        if let sourceProfile = newCoordinator.findMostRecentMatchingProfileByResolution() {
+            try newCoordinator.copyProfileFromSimilarSetup(sourceProfile: sourceProfile)
+        }
+
+        // Verify new profile was created with the new model name
+        let profiles = try store.loadProfiles()
+        XCTAssertEqual(profiles.count, 2)
+        
+        let newProfile = profiles.first { $0.signature.rawValue == "HP Monitorx1" }
+        XCTAssertNotNil(newProfile)
+        XCTAssertEqual(newProfile?.slots.first?.modelName, "HP Monitor")
+        XCTAssertEqual(newProfile?.slots.first?.targetResolution.width, 1920)
+    }
+
+    func testFindMostRecentMatchingProfileByResolution() throws {
+        let store = InMemoryProfileStore()
+
+        // Create first profile
+        let display1 = DisplaySnapshot(
+            runtimeID: "D1",
+            modelName: "Model A",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1200)),
+            resolution: .init(width: 1920, height: 1200)
+        )
+        let manager1 = MockDisplayManager(displays: [display1])
+        let coordinator1 = DisplayConfigurationCoordinator(
+            displayManager: manager1,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+        try coordinator1.captureCurrentSetup()
+
+        // Create second profile with same resolution
+        let display2 = DisplaySnapshot(
+            runtimeID: "D2",
+            modelName: "Model B",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1200)),
+            resolution: .init(width: 1920, height: 1200)
+        )
+        let manager2 = MockDisplayManager(displays: [display2])
+        let coordinator2 = DisplayConfigurationCoordinator(
+            displayManager: manager2,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0,
+            now: { Date.distantPast }  // Older date
+        )
+        try coordinator2.captureCurrentSetup()
+
+        // Now check from a third setup with same resolution
+        let display3 = DisplaySnapshot(
+            runtimeID: "D3",
+            modelName: "Model C",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1200)),
+            resolution: .init(width: 1920, height: 1200)
+        )
+        let manager3 = MockDisplayManager(displays: [display3])
+        let coordinator3 = DisplayConfigurationCoordinator(
+            displayManager: manager3,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+
+        // The most recent should be Model A (captured first with Date())
+        let mostRecent = coordinator3.findMostRecentMatchingProfileByResolution()
+        XCTAssertNotNil(mostRecent)
+        XCTAssertEqual(mostRecent?.signature.rawValue, "Model Ax1")
+    }
+
+    func testCopySimilarSetupDisabledWhenNoMatch() throws {
+        let store = InMemoryProfileStore()
+
+        // Create a profile
+        let display = DisplaySnapshot(
+            runtimeID: "D1",
+            modelName: "Dell U2405",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1200)),
+            resolution: .init(width: 1920, height: 1200)
+        )
+        let manager = MockDisplayManager(displays: [display])
+        let captureCoordinator = DisplayConfigurationCoordinator(
+            displayManager: manager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+        try captureCoordinator.captureCurrentSetup()
+
+        // Check with a different resolution - should have no match
+        let differentDisplay = DisplaySnapshot(
+            runtimeID: "D2",
+            modelName: "HP Monitor",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 2560, height: 1440)),
+            resolution: .init(width: 2560, height: 1440)
+        )
+        let newManager = MockDisplayManager(displays: [differentDisplay])
+        let newCoordinator = DisplayConfigurationCoordinator(
+            displayManager: newManager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+
+        XCTAssertFalse(newCoordinator.hasSimilarSetupByResolution())
+        XCTAssertNil(newCoordinator.findMostRecentMatchingProfileByResolution())
+    }
 }
 
 private final class MockDisplayManager: DisplayManaging {
