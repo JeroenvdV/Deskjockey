@@ -61,11 +61,7 @@ public final class DisplayConfigurationCoordinator {
         }
 
         let signature = MonitorSetSignature.from(displays: displays)
-        let sorted = displays.sorted {
-            if $0.frame.origin.x != $1.frame.origin.x { return $0.frame.origin.x < $1.frame.origin.x }
-            if $0.frame.origin.y != $1.frame.origin.y { return $0.frame.origin.y < $1.frame.origin.y }
-            return $0.runtimeID < $1.runtimeID
-        }
+        let sorted = displays.sortedByPosition()
         var summary = "Monitor set changed (\(displays.count) display(s), signature: \(signature.rawValue))"
         for display in sorted {
             let tag = display.isBuiltIn ? " (built-in)" : ""
@@ -225,11 +221,7 @@ public final class DisplayConfigurationCoordinator {
         }
 
         // Sort left-to-right, top-to-bottom -- consistent with SlotPlanner ordering
-        let sorted = displays.sorted {
-            if $0.frame.origin.x != $1.frame.origin.x { return $0.frame.origin.x < $1.frame.origin.x }
-            if $0.frame.origin.y != $1.frame.origin.y { return $0.frame.origin.y < $1.frame.origin.y }
-            return $0.runtimeID < $1.runtimeID
-        }
+        let sorted = displays.sortedByPosition()
 
         return sorted.map { display in
             let matchesSaved: Bool
@@ -299,19 +291,8 @@ public final class DisplayConfigurationCoordinator {
         let currentResolutionSignature = ResolutionSetSignature.from(displays: displays)
 
         // Sort both the source slots and current displays by position
-        let sortedSourceSlots = sourceProfile.slots.sorted {
-            if $0.targetFrame.origin.x != $1.targetFrame.origin.x {
-                return $0.targetFrame.origin.x < $1.targetFrame.origin.x
-            }
-            return $0.targetFrame.origin.y < $1.targetFrame.origin.y
-        }
-
-        let sortedDisplays = displays.sorted {
-            if $0.frame.origin.x != $1.frame.origin.x {
-                return $0.frame.origin.x < $1.frame.origin.x
-            }
-            return $0.frame.origin.y < $1.frame.origin.y
-        }
+        let sortedSourceSlots = sourceProfile.slots.sortedByPosition()
+        let sortedDisplays = displays.sortedByPosition()
 
         // Create new slots by mapping source slots to current displays by position
         // This assumes displays are in the same relative positions

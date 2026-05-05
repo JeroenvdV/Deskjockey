@@ -234,15 +234,7 @@ public enum SlotPlanner {
         var result: [String: [IndexedDisplay]] = [:]
 
         for (modelName, modelDisplays) in grouped {
-            let sorted = modelDisplays.sorted { lhs, rhs in
-                if lhs.frame.origin.x != rhs.frame.origin.x {
-                    return lhs.frame.origin.x < rhs.frame.origin.x
-                }
-                if lhs.frame.origin.y != rhs.frame.origin.y {
-                    return lhs.frame.origin.y < rhs.frame.origin.y
-                }
-                return lhs.runtimeID < rhs.runtimeID
-            }
+            let sorted = modelDisplays.sortedByPosition()
             result[modelName] = sorted.enumerated().map { index, display in
                 IndexedDisplay(slotIndex: index, display: display)
             }
@@ -278,15 +270,7 @@ public enum DisplayMatcher {
         var result: [(display: DisplaySnapshot, slot: MonitorSlotProfile)] = []
 
         for (modelName, slots) in slotsByModel {
-            var unmatchedDisplays = (displaysByModel[modelName] ?? []).sorted {
-                if $0.frame.origin.x != $1.frame.origin.x {
-                    return $0.frame.origin.x < $1.frame.origin.x
-                }
-                if $0.frame.origin.y != $1.frame.origin.y {
-                    return $0.frame.origin.y < $1.frame.origin.y
-                }
-                return $0.runtimeID < $1.runtimeID
-            }
+            var unmatchedDisplays = (displaysByModel[modelName] ?? []).sortedByPosition()
             let sortedSlots = slots.sorted(by: { $0.slotIndex < $1.slotIndex })
 
             for slot in sortedSlots {
@@ -318,6 +302,42 @@ public enum DisplayMatcher {
         let dx = lhsCenter.x - rhsCenter.x
         let dy = lhsCenter.y - rhsCenter.y
         return (dx * dx) + (dy * dy)
+    }
+}
+
+// MARK: - Sorting helpers
+
+/// Sorting extension for DisplaySnapshot arrays to ensure consistent ordering
+/// across the codebase. Displays are sorted left-to-right, then top-to-bottom,
+/// with runtime ID as a final tiebreaker for deterministic ordering.
+extension Array where Element == DisplaySnapshot {
+    /// Sorts displays by their physical position (left-to-right, top-to-bottom).
+    /// Used consistently throughout the app for display ordering in menus and matching.
+    public func sortedByPosition() -> [DisplaySnapshot] {
+        self.sorted {
+            if $0.frame.origin.x != $1.frame.origin.x {
+                return $0.frame.origin.x < $1.frame.origin.x
+            }
+            if $0.frame.origin.y != $1.frame.origin.y {
+                return $0.frame.origin.y < $1.frame.origin.y
+            }
+            return $0.runtimeID < $1.runtimeID
+        }
+    }
+}
+
+/// Sorting extension for MonitorSlotProfile arrays to ensure consistent ordering
+/// across the codebase. Slots are sorted by their target frame position (left-to-right, top-to-bottom).
+extension Array where Element == MonitorSlotProfile {
+    /// Sorts slot profiles by their target frame position (left-to-right, top-to-bottom).
+    /// Used for consistent slot ordering when copying profiles between similar setups.
+    public func sortedByPosition() -> [MonitorSlotProfile] {
+        self.sorted {
+            if $0.targetFrame.origin.x != $1.targetFrame.origin.x {
+                return $0.targetFrame.origin.x < $1.targetFrame.origin.x
+            }
+            return $0.targetFrame.origin.y < $1.targetFrame.origin.y
+        }
     }
 }
 

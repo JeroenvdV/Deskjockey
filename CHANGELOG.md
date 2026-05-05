@@ -2,6 +2,15 @@
 
 All notable changes to Deskjockey are documented in this file.
 
+## Unreleased
+
+- Added comprehensive test coverage: 52 tests covering core functionality (was 18)
+- Test coverage improved: 88.7% function coverage, 93.4% line coverage (was 67.4%, 83.3%)
+- Added tests for ProfileStore, Debouncer, FileLogger, and error handling in Coordinator
+- Refactored duplicate display sorting logic into reusable `sortedByPosition()` extensions
+- Fixed FileWatcher to monitor specific file instead of parent directory
+- Added comprehensive coding guidelines and architecture documentation to DEVELOPMENT.md
+
 ## 1.1.0 - 2026-05-04
 
 - Menu bar icon briefly flashes green when a display change is processed

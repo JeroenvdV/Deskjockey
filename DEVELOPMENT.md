@@ -179,3 +179,167 @@ brew upgrade --cask deskjockey
 - [ ] GitHub Release created with tag `vX.Y.Z` and zip attached
 - [ ] Homebrew tap updated with new version and SHA256
 - [ ] `brew install --cask deskjockey` tested from clean state
+
+---
+
+## Coding Guidelines
+
+### Architecture Principles
+
+1. **Separation of Concerns**: DeskjockeyCore contains zero AppKit/CoreGraphics dependencies. All platform-specific code lives in DeskjockeyApp. This allows the core logic to be tested without hardware and potentially reused for other platforms.
+
+2. **Dependency Injection**: Use protocols for all external dependencies (DisplayManaging, MonitorProfileStoring, Logger, SleepManaging). This enables full testability with mock objects.
+
+3. **Single Responsibility**: Each class should have one clear responsibility. If a class grows beyond ~300 lines or has more than 5-6 public methods, consider splitting it.
+
+4. **Immutability First**: Prefer value types (structs) over reference types (classes) for data models. Use `let` for properties that don't need to change.
+
+5. **Error Handling**: Use typed errors (enums conforming to Error) rather than strings or raw error codes. Provide descriptive `CustomStringConvertible` implementations.
+
+### Code Style
+
+#### Naming
+- Use **PascalCase** for types, protocols, enums
+- Use **camelCase** for variables, functions, properties
+- Use **UPPER_CAMEL_CASE** for constants and static properties
+- Name types for what they **are** (nouns): `DisplaySnapshot`, `MonitorSetProfile`
+- Name functions for what they **do** (verbs): `captureCurrentSetup()`, `applyConfiguration()`
+- Name booleans to read like assertions: `hasSavedProfile`, `isBuiltIn`, `currentSetupMatchesSaved`
+
+#### Formatting
+- **Indentation**: 4 spaces (Xcode default)
+- **Line length**: Aim for 100-120 characters, but don't break readability
+- **Braces**: Opening brace on same line for functions, types, control flow
+- **Spacing**: One blank line between logical sections, no blank lines within related code
+
+#### Organization
+- Group related functionality with `// MARK: - ` comments
+- Order: Properties, Initializers, Public methods, Private methods
+- Use extensions to organize conformances and related functionality
+
+### Testing
+
+#### Test Structure
+- **File naming**: `*Tests.swift` suffix (e.g., `ProfileStoreTests.swift`)
+- **Test class naming**: `*Tests` suffix (e.g., `ProfileStoreTests`)
+- **Test method naming**: Start with `test` followed by descriptive name in camelCase
+
+#### Test Coverage
+- **Target**: Maintain >80% line coverage, >70% function coverage in DeskjockeyCore
+- **Focus**: All public APIs should be tested; critical paths (persistence, error handling) must have tests
+- **Mock objects**: Use protocols for mocking; keep mocks simple and focused
+
+#### Test Quality
+- **Isolation**: Each test should set up its own dependencies and not rely on shared state
+- **Determinism**: Tests should be deterministic (same input always produces same output)
+- **Speed**: Tests should run quickly; avoid sleep/wait in tests when possible
+- **Clarity**: Test names should clearly describe the behavior being tested
+
+### Common Patterns
+
+#### Sorting
+Use the provided extensions for consistent sorting:
+```swift
+// For DisplaySnapshot arrays
+displays.sortedByPosition()
+
+// For MonitorSlotProfile arrays
+slots.sortedByPosition()
+```
+Do NOT inline sorting logic - use these extensions for consistency.
+
+#### Constants
+Define magic numbers and strings as constants:
+```swift
+private enum Constants {
+    static let debounceDelay: TimeInterval = 0.8
+    static let reapplyDelayMilliseconds: UInt64 = 1_000
+    static let statusIconFlashDuration: TimeInterval = 0.8
+}
+```
+
+#### Error Handling
+Prefer typed errors with descriptive messages:
+```swift
+public enum ProfileError: Error, CustomStringConvertible {
+    case noDisplaysConnected
+    case profileNotFound(signature: String)
+    case storageFailure(underlying: Error)
+
+    public var description: String {
+        switch self {
+        case .noDisplaysConnected:
+            return "No displays connected"
+        // ...
+        }
+    }
+}
+```
+
+#### Logging
+Use the Logger protocol for all logging:
+```swift
+logger.info("Monitor set changed ($count display(s), signature: $signature)")
+logger.error("Failed to load profiles: $error")
+```
+Avoid `print()` statements in production code.
+
+### File Organization
+
+| File | Purpose |
+|------|---------|
+| `Models.swift` | Core data types, geometry primitives, signatures |
+| `DisplayConfigurationCoordinator.swift` | Profile management, matching, applying |
+| `ProfileStore.swift` | JSON persistence layer |
+| `DisplayManaging.swift` | Protocols and logging implementations |
+| `Errors.swift` | Typed error definitions |
+| `Debouncer.swift` | Event coalescing utility |
+| `Runtime.swift` | Platform-specific implementations (macOS) |
+| `AppDelegate.swift` | App lifecycle, menu management, display change handling |
+
+---
+
+## Contributing
+
+### Before Submitting a PR
+
+1. **Run tests**: Ensure all tests pass with `swift test`
+2. **Check coverage**: New code should have corresponding tests; maintain existing coverage levels
+3. **Follow style**: Use the coding guidelines above
+4. **Update docs**: If you change user-facing behavior, update README.md
+5. **Squash commits**: Rebase and squash into logical commits before merging
+
+### PR Template
+
+```
+## Description
+
+[What this PR does]
+
+## Changes
+
+- [ ] Bug fix
+- [ ] New feature
+- [ ] Refactoring
+- [ ] Documentation
+- [ ] Tests
+
+## Testing
+
+- [ ] All existing tests pass
+- [ ] New tests added for new functionality
+- [ ] Manual testing performed
+
+## Checklist
+
+- [ ] Code follows coding guidelines
+- [ ] Tests pass
+- [ ] Documentation updated (if applicable)
+```
+
+### Review Process
+
+1. All PRs require at least one approval
+2. CI must pass (tests + build)
+3. Code review focuses on: correctness, clarity, maintainability, test coverage
+4. Address review comments before merging

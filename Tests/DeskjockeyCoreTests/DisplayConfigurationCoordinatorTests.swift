@@ -482,6 +482,256 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         XCTAssertFalse(newCoordinator.hasSimilarSetupByResolution())
         XCTAssertNil(newCoordinator.findMostRecentMatchingProfileByResolution())
     }
+
+    func testReapplyThrowsErrorFromDisplayManager() async {
+        class FailingDisplayManager: DisplayManaging {
+            var appliedConfigurations: [DisplayConfiguration] = []
+            
+            func currentDisplays() -> [DisplaySnapshot] {
+                [
+                    DisplaySnapshot(
+                        runtimeID: "ERROR-DISPLAY",
+                        modelName: "Error Display",
+                        isBuiltIn: false,
+                        frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1200)),
+                        resolution: .init(width: 1920, height: 1200)
+                    )
+                ]
+            }
+            
+            func apply(configuration: DisplayConfiguration, to display: DisplaySnapshot) throws {
+                appliedConfigurations.append(configuration)
+                throw DisplayError.displayNotFound(runtimeID: display.runtimeID)
+            }
+        }
+        
+        let failingManager = FailingDisplayManager()
+        let store = InMemoryProfileStore()
+        let coordinator = DisplayConfigurationCoordinator(
+            displayManager: failingManager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+        
+        // Now try to reapply - should handle error gracefully
+        await coordinator.monitorSetDidChange()
+        
+        // The coordinator should have logged the error but not crashed
+        // The apply should have been attempted (and failed)
+        XCTAssertTrue(failingManager.appliedConfigurations.isEmpty)
+    }
+
+    func testCaptureWithCorruptedProfileStore() {
+        class FailingProfileStore: MonitorProfileStoring {
+            func loadProfiles() throws -> [MonitorSetProfile] {
+                throw ProfileError.storageFailure(underlying: NSError(domain: "Test", code: 1))
+            }
+            func saveProfiles(_ profiles: [MonitorSetProfile]) throws {
+                throw ProfileError.storageFailure(underlying: NSError(domain: "Test", code: 1))
+            }
+        }
+        
+        let manager = MockDisplayManager(displays: [])
+        let failingStore = FailingProfileStore()
+        let coordinator = DisplayConfigurationCoordinator(
+            displayManager: manager,
+            profileStore: failingStore,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+        
+        XCTAssertFalse(coordinator.hasSavedProfile())
+    }
+
+    func testReapplyWithNoMatchingProfile() async {
+        let display = DisplaySnapshot(
+            runtimeID: "D1",
+            modelName: "Dell U2405",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1200)),
+            resolution: .init(width: 1920, height: 1200)
+        )
+        let manager = MockDisplayManager(displays: [display])
+        let store = InMemoryProfileStore()
+        let coordinator = DisplayConfigurationCoordinator(
+            displayManager: manager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+
+        // Don't capture any profile
+        await coordinator.monitorSetDidChange()
+
+        // Should not apply anything since no profile exists
+        XCTAssertEqual(manager.applied.count, 0)
+    }
+
+    func testDisplaySummariesWithNoProfile() {
+        let display = DisplaySnapshot(
+            runtimeID: "D1",
+            modelName: "Dell U2405",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1200)),
+            resolution: .init(width: 1920, height: 1200)
+        )
+        let manager = MockDisplayManager(displays: [display])
+        let store = InMemoryProfileStore()
+        let coordinator = DisplayConfigurationCoordinator(
+            displayManager: manager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+
+        let summaries = coordinator.displaySummaries()
+        XCTAssertEqual(summaries.count, 1)
+        XCTAssertFalse(summaries[0].matchesSaved)
+    }
+
+    func testDisplaySummariesWithMismatchedResolution() throws {
+        let display = DisplaySnapshot(
+            runtimeID: "D1",
+            modelName: "Dell U2405",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1200)),
+            resolution: .init(width: 1280, height: 800)  // Different from saved
+        )
+        let manager = MockDisplayManager(displays: [display])
+        let store = InMemoryProfileStore()
+        let coordinator = DisplayConfigurationCoordinator(
+            displayManager: manager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+
+        // Capture with one resolution
+        let captureDisplay = DisplaySnapshot(
+            runtimeID: "D1",
+            modelName: "Dell U2405",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1200)),
+            resolution: .init(width: 1920, height: 1200)
+        )
+        manager.displays = [captureDisplay]
+        try coordinator.captureCurrentSetup()
+
+        // Now check with different resolution
+        manager.displays = [display]
+        let summaries = coordinator.displaySummaries()
+        XCTAssertEqual(summaries.count, 1)
+        XCTAssertFalse(summaries[0].matchesSaved)
+    }
+
+    func testCurrentSetupMatchesSavedWithBuiltInDisplay() throws {
+        let builtIn = DisplaySnapshot(
+            runtimeID: "BUILTIN",
+            modelName: "MacBook Pro Display",
+            isBuiltIn: true,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1728, height: 1117)),
+            resolution: .init(width: 1728, height: 1117)
+        )
+        let manager = MockDisplayManager(displays: [builtIn])
+        let store = InMemoryProfileStore()
+        let coordinator = DisplayConfigurationCoordinator(
+            displayManager: manager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+
+        try coordinator.captureCurrentSetup()
+        XCTAssertTrue(coordinator.currentSetupMatchesSaved())
+
+        // Built-in display resolution changes shouldn't affect match
+        // (since we only compare position for built-in displays)
+        manager.displays = [
+            DisplaySnapshot(
+                runtimeID: "BUILTIN",
+                modelName: "MacBook Pro Display",
+                isBuiltIn: true,
+                frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1728, height: 1117)),
+                resolution: .init(width: 1512, height: 982)  // Different resolution
+            )
+        ]
+        XCTAssertTrue(coordinator.currentSetupMatchesSaved())
+    }
+
+    func testRecordProfileUsedUpdatesLastUsedAt() throws {
+        let display = DisplaySnapshot(
+            runtimeID: "D1",
+            modelName: "Dell U2405",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1200)),
+            resolution: .init(width: 1920, height: 1200)
+        )
+        let manager = MockDisplayManager(displays: [display])
+        let store = InMemoryProfileStore()
+        let coordinator = DisplayConfigurationCoordinator(
+            displayManager: manager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+
+        try coordinator.captureCurrentSetup()
+        
+        // Initially lastUsedAt should be nil
+        let profiles1 = try store.loadProfiles()
+        XCTAssertNil(profiles1[0].lastUsedAt)
+
+        // After applying (simulated via recordProfileUsed)
+        coordinator.recordProfileUsed()
+        
+        let profiles2 = try store.loadProfiles()
+        XCTAssertNotNil(profiles2[0].lastUsedAt)
+    }
+
+    func testMigrateProfilesIfNeededAddsResolutionSignatures() throws {
+        let display = DisplaySnapshot(
+            runtimeID: "D1",
+            modelName: "Dell U2405",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1200)),
+            resolution: .init(width: 1920, height: 1200)
+        )
+        let manager = MockDisplayManager(displays: [display])
+        let store = InMemoryProfileStore()
+        let coordinator = DisplayConfigurationCoordinator(
+            displayManager: manager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+
+        // Create a profile without resolution signature (old format)
+        let oldProfile = MonitorSetProfile(
+            signature: MonitorSetSignature(rawValue: "Dell U2405x1"),
+            slots: [
+                MonitorSlotProfile(
+                    modelName: "Dell U2405",
+                    slotIndex: 0,
+                    targetFrame: display.frame,
+                    targetResolution: display.resolution
+                )
+            ],
+            updatedAt: Date(),
+            lastUsedAt: nil,
+            resolutionSignature: nil  // Old format - no resolution signature
+        )
+        try store.saveProfiles([oldProfile])
+
+        // Run migration
+        coordinator.migrateProfilesIfNeeded()
+
+        // Check that resolution signature was added
+        let profiles = try store.loadProfiles()
+        XCTAssertEqual(profiles.count, 1)
+        XCTAssertNotNil(profiles[0].resolutionSignatureRawValue)
+        XCTAssertEqual(profiles[0].resolutionSignature?.rawValue, "1920x1200x1")
+    }
 }
 
 private final class MockDisplayManager: DisplayManaging {

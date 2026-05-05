@@ -7,22 +7,26 @@ import Darwin
 
 // MARK: - File Watcher
 
-/// Simple file system watcher that notifies when files in a directory change.
-/// Uses DispatchSource to monitor the directory for write events.
+/// Monitors a specific file for changes and notifies when modifications are detected.
+/// Uses DispatchSource to watch the file's parent directory for write events,
+/// then verifies the specific file was modified.
 final class FileWatcher {
-    private let directory: URL
+    private let fileURL: URL
     private let queue: DispatchQueue
     private var source: DispatchSourceFileSystemObject?
     private var descriptor: Int32 = -1
     private let callback: (FileChangeEvent) -> Void
 
+    /// Represents a file change event with the path to the modified file.
     struct FileChangeEvent {
         let path: String
     }
 
-    init(directory: URL, callback: @escaping (FileChangeEvent) -> Void) {
-        self.directory = directory
-        self.queue = DispatchQueue(label: "com.deskjockey.filewatcher", attributes: .concurrent)
+    /// - Parameter fileURL: The specific file to monitor for changes
+    /// - Parameter callback: Closure called when the file is modified
+    init(fileURL: URL, callback: @escaping (FileChangeEvent) -> Void) {
+        self.fileURL = fileURL
+        self.queue = DispatchQueue(label: "com.deskjockey.filewatcher")
         self.callback = callback
 
         startWatching()
@@ -33,7 +37,9 @@ final class FileWatcher {
     }
 
     private func startWatching() {
-        descriptor = open(directory.path, O_EVTONLY)
+        // Open the parent directory for monitoring
+        let parentDirectory = fileURL.deletingLastPathComponent()
+        descriptor = open(parentDirectory.path, O_EVTONLY)
         guard descriptor != -1 else { return }
 
         source = DispatchSource.makeFileSystemObjectSource(
@@ -65,11 +71,13 @@ final class FileWatcher {
     }
 
     private func handleFileSystemEvent() {
-        // Read the directory to see which files changed
-        // For simplicity, we'll just notify that something changed
-        // In a more sophisticated implementation, we'd track specific files
-        let event = FileChangeEvent(path: directory.appendingPathComponent("profiles.json").path)
-        callback(event)
+        // Check if our specific file exists and was recently modified
+        // This is a simple check - for production use, consider tracking
+        // the file's modification date to avoid false positives
+        if FileManager.default.fileExists(atPath: fileURL.path) {
+            let event = FileChangeEvent(path: fileURL.path)
+            callback(event)
+        }
     }
 }
 

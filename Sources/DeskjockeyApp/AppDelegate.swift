@@ -102,13 +102,11 @@ final class AppDelegate: NSObject {
     private func setupConfigFileWatcher() {
         let fileURL = profileFileURL()
         
-        // Watch the parent directory for changes
-        let parentURL = fileURL.deletingLastPathComponent()
-        
-        configFileWatcher = FileWatcher(directory: parentURL) { [weak self] event in
+        // Watch the specific profiles.json file for changes
+        configFileWatcher = FileWatcher(fileURL: fileURL) { [weak self] event in
             guard let self = self else { return }
             
-            // Check if the profiles.json file was modified
+            // Only reload if the event path matches our file
             if event.path == fileURL.path {
                 DispatchQueue.main.async {
                     self.logger.info("Config file changed externally, reloading...")
