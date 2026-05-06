@@ -84,6 +84,9 @@ public struct DisplaySnapshot: Codable, Hashable, Sendable {
         return trimmed.isEmpty ? "Unknown Display" : trimmed
     }
 
+    /// Returns the stable model identifier used for persisted profile lookup and
+    /// topology matching. Built-in displays are collapsed to one canonical name
+    /// so transient macOS label changes do not create duplicate profiles.
     public static func matchingModelName(modelName: String, isBuiltIn: Bool) -> String {
         if isBuiltIn {
             return "Built-in Display"
