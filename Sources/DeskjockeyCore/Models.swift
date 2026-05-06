@@ -71,9 +71,27 @@ public struct DisplaySnapshot: Codable, Hashable, Sendable {
         Self.normalizeModelName(modelName)
     }
 
+    /// Stable identifier used for persisted profiles and topology/signature matching.
+    /// macOS may report different localized names for the same built-in panel
+    /// ("Built-in Display", "Built-in Retina Display", etc.), so built-in displays
+    /// are intentionally collapsed to one canonical name.
+    public var matchingModelName: String {
+        Self.matchingModelName(modelName: modelName, isBuiltIn: isBuiltIn)
+    }
+
     public static func normalizeModelName(_ value: String) -> String {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? "Unknown Display" : trimmed
+    }
+
+    /// Returns the stable model identifier used for persisted profile lookup and
+    /// topology matching. Built-in displays are collapsed to one canonical name
+    /// so transient macOS label changes do not create duplicate profiles.
+    public static func matchingModelName(modelName: String, isBuiltIn: Bool) -> String {
+        if isBuiltIn {
+            return "Built-in Display"
+        }
+        return normalizeModelName(modelName)
     }
 }
 
@@ -101,7 +119,7 @@ public struct DisplayConfiguration: Codable, Hashable, Sendable {
 /// Identifies a set of monitors by model name and count, ignoring runtime IDs,
 /// cable order, and port assignment. Two setups with the same models produce the
 /// same signature, which is used as the key for profile lookup.
-/// Example: "Built-in Retina Displayx1|DELL P3223QEx2"
+/// Example: "Built-in Displayx1|DELL P3223QEx2"
 public struct MonitorSetSignature: Codable, Hashable, Sendable {
     public var rawValue: String
 
@@ -110,7 +128,7 @@ public struct MonitorSetSignature: Codable, Hashable, Sendable {
     }
 
     public static func from(displays: [DisplaySnapshot]) -> MonitorSetSignature {
-        let counts = Dictionary(grouping: displays, by: { $0.normalizedModelName }).mapValues(\.count)
+        let counts = Dictionary(grouping: displays, by: { $0.matchingModelName }).mapValues(\.count)
         let normalized = counts.keys.sorted().map { modelName in
             "\(modelName)x\(counts[modelName] ?? 0)"
         }
@@ -130,7 +148,7 @@ public struct DisplayTopologyFingerprint: Hashable, Sendable {
 
     public static func from(displays: [DisplaySnapshot]) -> DisplayTopologyFingerprint {
         let tokens = displays
-            .map { "\($0.normalizedModelName)#\($0.runtimeID)#\($0.isBuiltIn ? "builtIn" : "external")" }
+            .map { "\($0.matchingModelName)#\($0.runtimeID)#\($0.isBuiltIn ? "builtIn" : "external")" }
             .sorted()
         return .init(rawValue: tokens.joined(separator: "|"))
     }
@@ -188,7 +206,7 @@ public enum SlotPlanner {
     public static func indexedSlots(
         for displays: [DisplaySnapshot]
     ) -> [String: [IndexedDisplay]] {
-        let grouped = Dictionary(grouping: displays, by: { $0.normalizedModelName })
+        let grouped = Dictionary(grouping: displays, by: { $0.matchingModelName })
         var result: [String: [IndexedDisplay]] = [:]
 
         for (modelName, modelDisplays) in grouped {
@@ -231,7 +249,7 @@ public enum DisplayMatcher {
         liveDisplays: [DisplaySnapshot],
         profileSlots: [MonitorSlotProfile]
     ) -> [(display: DisplaySnapshot, slot: MonitorSlotProfile)] {
-        let displaysByModel = Dictionary(grouping: liveDisplays, by: \.normalizedModelName)
+        let displaysByModel = Dictionary(grouping: liveDisplays, by: \.matchingModelName)
         let slotsByModel = Dictionary(grouping: profileSlots, by: \.modelName)
         var result: [(display: DisplaySnapshot, slot: MonitorSlotProfile)] = []
 
