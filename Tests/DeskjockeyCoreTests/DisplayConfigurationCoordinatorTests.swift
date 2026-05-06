@@ -150,6 +150,7 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
 
         await reapplyCoordinator.monitorSetDidChange()
 
+        // Signature raw values are stored in the compact persisted `ModelxCount|ModelxCount` form.
         XCTAssertEqual(
             reapplyCoordinator.currentSignature(),
             MonitorSetSignature(rawValue: "Built-in Displayx1|DELL P3225QEx1")

@@ -82,6 +82,7 @@ final class SignatureTests: XCTestCase {
             MonitorSetSignature.from(displays: setupA),
             MonitorSetSignature.from(displays: setupB)
         )
+        // The persisted signature format is intentionally compact: `ModelxCount|ModelxCount`.
         XCTAssertEqual(
             MonitorSetSignature.from(displays: setupA).rawValue,
             "Built-in Displayx1|DELL P3225QEx1"
