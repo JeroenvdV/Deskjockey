@@ -123,6 +123,9 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         )
         try captureCoordinator.captureCurrentSetup()
 
+        // macOS can report the same built-in panel under a different name and scaling mode
+        // after reconnecting to a desk. The profile should still match, but built-in
+        // resolution should remain managed by macOS during reapply.
         let liveBuiltIn = DisplaySnapshot(
             runtimeID: "BUILT-IN",
             modelName: "Built-in Retina Display",
