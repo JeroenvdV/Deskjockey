@@ -97,6 +97,69 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         XCTAssertEqual(appliedByRuntime["NEW-B"]?.targetResolution.width, 1920)
     }
 
+    func testReapplyMatchesBuiltInDisplayAcrossNameVariants() async throws {
+        let store = InMemoryProfileStore()
+
+        let originalBuiltIn = DisplaySnapshot(
+            runtimeID: "BUILT-IN",
+            modelName: "Built-in Display",
+            isBuiltIn: true,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 2048, height: 1280)),
+            resolution: .init(width: 2048, height: 1280)
+        )
+        let originalExternal = DisplaySnapshot(
+            runtimeID: "EXT-1",
+            modelName: "DELL P3225QE",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: -937, y: -2160), size: .init(width: 3840, height: 2160)),
+            resolution: .init(width: 3840, height: 2160)
+        )
+        let captureManager = MockDisplayManager(displays: [originalBuiltIn, originalExternal])
+        let captureCoordinator = DisplayConfigurationCoordinator(
+            displayManager: captureManager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+        try captureCoordinator.captureCurrentSetup()
+
+        let liveBuiltIn = DisplaySnapshot(
+            runtimeID: "BUILT-IN",
+            modelName: "Built-in Retina Display",
+            isBuiltIn: true,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 2048, height: 1326)),
+            resolution: .init(width: 2048, height: 1326)
+        )
+        let liveExternal = DisplaySnapshot(
+            runtimeID: "EXT-2",
+            modelName: "DELL P3225QE",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: -937, y: -1080), size: .init(width: 3840, height: 2160)),
+            resolution: .init(width: 1920, height: 1080)
+        )
+        let reapplyManager = MockDisplayManager(displays: [liveBuiltIn, liveExternal])
+        let reapplyCoordinator = DisplayConfigurationCoordinator(
+            displayManager: reapplyManager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+
+        await reapplyCoordinator.monitorSetDidChange()
+
+        XCTAssertEqual(
+            reapplyCoordinator.currentSignature(),
+            MonitorSetSignature(rawValue: "Built-in Displayx1|DELL P3225QEx1")
+        )
+        XCTAssertEqual(reapplyManager.applied.count, 2)
+
+        let appliedByRuntime = Dictionary(uniqueKeysWithValues: reapplyManager.applied.map { ($0.runtimeID, $0) })
+        XCTAssertEqual(appliedByRuntime["BUILT-IN"]?.targetFrame.origin, .init(x: 0, y: 0))
+        XCTAssertEqual(appliedByRuntime["BUILT-IN"]?.targetResolution, .init(width: 2048, height: 1326))
+        XCTAssertEqual(appliedByRuntime["EXT-2"]?.targetFrame.origin, .init(x: -937, y: -2160))
+        XCTAssertEqual(appliedByRuntime["EXT-2"]?.targetResolution, .init(width: 3840, height: 2160))
+    }
+
     func testNoProfileMeansNoApply() async {
         let manager = MockDisplayManager(displays: [
             DisplaySnapshot(
