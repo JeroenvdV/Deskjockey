@@ -165,7 +165,7 @@ public final class DisplayConfigurationCoordinator {
             let slots = resolution.pairs
                 .map { display, slotIndex in
                     MonitorSlotProfile(
-                        modelName: display.normalizedModelName,
+                        modelName: display.matchingModelName,
                         slotIndex: slotIndex,
                         targetFrame: display.frame,
                         targetResolution: display.resolution
@@ -253,8 +253,8 @@ public final class DisplayConfigurationCoordinator {
             uniqueKeysWithValues: resolution.pairs.map { ($0.display.runtimeID, $0.slotIndex) }
         )
         let sorted = displays.sorted {
-            if $0.normalizedModelName != $1.normalizedModelName {
-                return $0.normalizedModelName < $1.normalizedModelName
+            if $0.matchingModelName != $1.matchingModelName {
+                return $0.matchingModelName < $1.matchingModelName
             }
             let lhsSlot = slotIndexByRuntimeID[$0.runtimeID] ?? 0
             let rhsSlot = slotIndexByRuntimeID[$1.runtimeID] ?? 0
@@ -337,20 +337,20 @@ public final class DisplayConfigurationCoordinator {
         }
         let sortedDisplays = displays.sorted {
             if $0.resolution != $1.resolution { return $0.resolution < $1.resolution }
-            return $0.normalizedModelName < $1.normalizedModelName
+            return $0.matchingModelName < $1.matchingModelName
         }
 
         var slots: [MonitorSlotProfile] = []
         var assignmentEntries: [SlotAssignmentEntry] = []
         for (sourceSlot, display) in zip(sortedSourceSlots, sortedDisplays) {
             slots.append(MonitorSlotProfile(
-                modelName: display.normalizedModelName,
+                modelName: display.matchingModelName,
                 slotIndex: sourceSlot.slotIndex,
                 targetFrame: sourceSlot.targetFrame,
                 targetResolution: sourceSlot.targetResolution
             ))
             assignmentEntries.append(SlotAssignmentEntry(
-                modelName: display.normalizedModelName,
+                modelName: display.matchingModelName,
                 slotIndex: sourceSlot.slotIndex,
                 serialNumber: display.serialNumber,
                 portIdentifier: display.portIdentifier
@@ -429,18 +429,49 @@ public final class DisplayConfigurationCoordinator {
         }
     }
 
-    /// Migrates existing profiles to use canonical resolution signature ordering.
-    /// Handles both nil (pre-resolution-signature profiles) and stale values
-    /// (profiles written with the old area-descending ordering).
+    /// Migrates existing profiles to canonical formats:
+    /// - Resolution signatures: canonical DisplaySize.Comparable ordering
+    /// - Built-in display names: collapsed to "Built-in Display" in slots,
+    ///   assignments, and signatures
     public func migrateProfilesIfNeeded() {
         do {
             var profiles = try profileStore.loadProfiles()
             var needsSave = false
+            let builtInCanonical = "Built-in Display"
             
             for i in 0..<profiles.count {
-                // Recompute from slots using canonical ordering (DisplaySize.Comparable:
-                // width ascending, then height ascending). This produces the same result
-                // as ResolutionSetSignature.from() but works from persisted slot data.
+                // Canonicalize built-in display names in slot profiles
+                for j in 0..<profiles[i].slots.count {
+                    if profiles[i].slots[j].modelName.hasPrefix("Built-in")
+                        && profiles[i].slots[j].modelName != builtInCanonical {
+                        profiles[i].slots[j].modelName = builtInCanonical
+                        needsSave = true
+                    }
+                }
+
+                // Canonicalize built-in display names in known assignments
+                for j in 0..<profiles[i].knownAssignments.count {
+                    for k in 0..<profiles[i].knownAssignments[j].entries.count {
+                        if profiles[i].knownAssignments[j].entries[k].modelName.hasPrefix("Built-in")
+                            && profiles[i].knownAssignments[j].entries[k].modelName != builtInCanonical {
+                            profiles[i].knownAssignments[j].entries[k].modelName = builtInCanonical
+                            needsSave = true
+                        }
+                    }
+                }
+
+                // Recompute signature if it contains a non-canonical built-in name
+                if profiles[i].signatureRawValue.contains("Built-in")
+                    && !profiles[i].signatureRawValue.contains("Built-in Displayx") {
+                    let counts = Dictionary(grouping: profiles[i].slots, by: { $0.modelName })
+                        .mapValues { $0.count }
+                    let canonical = counts.keys.sorted().map { "\($0)x\(counts[$0] ?? 0)" }
+                        .joined(separator: "|")
+                    profiles[i].signatureRawValue = canonical
+                    needsSave = true
+                }
+
+                // Recompute resolution signature using canonical ordering
                 let resolutionCounts = Dictionary(grouping: profiles[i].slots, by: { $0.targetResolution })
                     .mapValues { $0.count }
                 let canonical = resolutionCounts.keys.sorted().map {
@@ -452,10 +483,33 @@ public final class DisplayConfigurationCoordinator {
                     needsSave = true
                 }
             }
+
+            // Deduplicate profiles that now have the same signature after
+            // built-in name canonicalization (keep most recently updated)
+            if needsSave {
+                var seen: [String: Int] = [:]
+                var toRemove: [Int] = []
+                for i in 0..<profiles.count {
+                    if let existing = seen[profiles[i].signatureRawValue] {
+                        // Keep the one with the more recent updatedAt
+                        if profiles[i].updatedAt > profiles[existing].updatedAt {
+                            toRemove.append(existing)
+                            seen[profiles[i].signatureRawValue] = i
+                        } else {
+                            toRemove.append(i)
+                        }
+                    } else {
+                        seen[profiles[i].signatureRawValue] = i
+                    }
+                }
+                for index in toRemove.sorted().reversed() {
+                    profiles.remove(at: index)
+                }
+            }
             
             if needsSave {
                 try profileStore.saveProfiles(profiles)
-                logger.info("Migrated profiles to canonical resolution signature ordering")
+                logger.info("Migrated profiles (built-in name canonicalization, resolution signatures)")
             }
         } catch {
             logger.error("Failed to migrate profiles: \(error)")

@@ -35,7 +35,6 @@ final class AppDelegate: NSObject {
 
     private var statusItem: NSStatusItem?
     private var launchAtLoginMenuItem: NSMenuItem?
-    private var configFileWatcher: FileWatcher?
 
     /// Timestamp of the last processed display change, persisted across launches.
     private var lastProcessedAt: Date?
@@ -57,9 +56,6 @@ final class AppDelegate: NSObject {
         lastProcessedAt = UserDefaults.standard.object(forKey: Self.lastProcessedKey) as? Date
         configureStatusItem()
         refreshMenu()
-
-        // Set up file watcher for config file changes
-        setupConfigFileWatcher()
 
         let currentDisplays = displayManager.currentDisplays()
         guard !currentDisplays.isEmpty else {
@@ -94,49 +90,6 @@ final class AppDelegate: NSObject {
 
         displayObserver = DisplayChangeObserver { [weak self] in
             self?.handleDisplayChange()
-        }
-    }
-
-    // MARK: - Config File Watcher
-
-    private func setupConfigFileWatcher() {
-        let fileURL = profileFileURL()
-        
-        // Watch the specific profiles.json file for changes
-        configFileWatcher = FileWatcher(fileURL: fileURL) { [weak self] event in
-            guard let self = self else { return }
-            
-            // Only reload if the event path matches our file
-            if event.path == fileURL.path {
-                DispatchQueue.main.async {
-                    self.logger.info("Config file changed externally, reloading...")
-                    self.reloadProfiles()
-                }
-            }
-        }
-    }
-
-    private func reloadProfiles() {
-        do {
-            // Force reload of profiles from disk
-            let store = JSONProfileStore(fileURL: profileFileURL())
-            let profiles = try store.loadProfiles()
-            
-            // Create a new coordinator with the same dependencies but fresh state
-            // This ensures we pick up any external changes
-            coordinator = DisplayConfigurationCoordinator(
-                displayManager: displayManager,
-                profileStore: store,
-                logger: logger,
-                sleepManager: sleepManager,
-                reapplyDelayMilliseconds: 1_000,
-                now: Date.init
-            )
-            
-            logger.info("Profiles reloaded, found \(profiles.count) profile(s)")
-            refreshMenu()
-        } catch {
-            logger.error("Failed to reload profiles: \(error)")
         }
     }
 

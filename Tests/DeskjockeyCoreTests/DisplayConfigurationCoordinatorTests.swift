@@ -32,7 +32,7 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         XCTAssertEqual(profiles.count, 1)
         XCTAssertEqual(
             profiles[0].signature,
-            MonitorSetSignature(rawValue: "Dell U2405x1|MacBook Pro Displayx1")
+            MonitorSetSignature(rawValue: "Built-in Displayx1|Dell U2405x1")
         )
         XCTAssertEqual(profiles[0].slots.count, 2)
     }
@@ -147,6 +147,112 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         XCTAssertEqual(appliedByRuntime["NEW-B"]?.targetFrame.origin.x, 0)
         XCTAssertEqual(appliedByRuntime["NEW-A"]?.targetResolution.width, 1920)
         XCTAssertEqual(appliedByRuntime["NEW-B"]?.targetResolution.width, 1920)
+    }
+
+    /// Profile captured with "Built-in Display" must apply when macOS reports
+    /// the same panel as "Built-in Retina Display" (or vice versa).
+    func testReapplyMatchesBuiltInDisplayAcrossNameVariants() async throws {
+        let store = InMemoryProfileStore()
+
+        let originalBuiltIn = DisplaySnapshot(
+            runtimeID: "BUILT-IN",
+            modelName: "Built-in Display",
+            isBuiltIn: true,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 2048, height: 1280)),
+            resolution: .init(width: 2048, height: 1280)
+        )
+        let originalExternal = DisplaySnapshot(
+            runtimeID: "EXT-1",
+            modelName: "DELL P3225QE",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: -937, y: -2160), size: .init(width: 3840, height: 2160)),
+            resolution: .init(width: 3840, height: 2160)
+        )
+        let captureManager = MockDisplayManager(displays: [originalBuiltIn, originalExternal])
+        let captureCoordinator = DisplayConfigurationCoordinator(
+            displayManager: captureManager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+        try captureCoordinator.captureCurrentSetup()
+
+        // macOS reports a different name for the same built-in panel
+        let liveBuiltIn = DisplaySnapshot(
+            runtimeID: "BUILT-IN",
+            modelName: "Built-in Retina Display",
+            isBuiltIn: true,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 2048, height: 1326)),
+            resolution: .init(width: 2048, height: 1326)
+        )
+        let liveExternal = DisplaySnapshot(
+            runtimeID: "EXT-2",
+            modelName: "DELL P3225QE",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: -937, y: -1080), size: .init(width: 3840, height: 2160)),
+            resolution: .init(width: 1920, height: 1080)
+        )
+        let reapplyManager = MockDisplayManager(displays: [liveBuiltIn, liveExternal])
+        let reapplyCoordinator = DisplayConfigurationCoordinator(
+            displayManager: reapplyManager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+
+        await reapplyCoordinator.monitorSetDidChange()
+
+        // Both displays should be configured
+        XCTAssertEqual(reapplyManager.applied.count, 2)
+
+        let appliedByRuntime = Dictionary(uniqueKeysWithValues: reapplyManager.applied.map { ($0.runtimeID, $0) })
+        // Built-in: position applied, resolution kept as-is (managed by macOS)
+        XCTAssertEqual(appliedByRuntime["BUILT-IN"]?.targetFrame.origin, .init(x: 0, y: 0))
+        XCTAssertEqual(appliedByRuntime["BUILT-IN"]?.targetResolution, .init(width: 2048, height: 1326))
+        // External: both position and resolution restored from profile
+        XCTAssertEqual(appliedByRuntime["EXT-2"]?.targetFrame.origin, .init(x: -937, y: -2160))
+        XCTAssertEqual(appliedByRuntime["EXT-2"]?.targetResolution, .init(width: 3840, height: 2160))
+    }
+
+    /// Migration must canonicalize old built-in display name variants in
+    /// existing profiles so they match new captures.
+    func testMigrateCanonicalizesBuiltInDisplayNames() throws {
+        let store = InMemoryProfileStore()
+        let manager = MockDisplayManager(displays: [])
+        let coordinator = DisplayConfigurationCoordinator(
+            displayManager: manager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+
+        // Old profile with non-canonical built-in name
+        let oldProfile = MonitorSetProfile(
+            signature: MonitorSetSignature(rawValue: "Built-in Retina Displayx1|DELL P3225QEx1"),
+            slots: [
+                MonitorSlotProfile(
+                    modelName: "Built-in Retina Display",
+                    slotIndex: 0,
+                    targetFrame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1243)),
+                    targetResolution: .init(width: 3840, height: 2486)
+                ),
+                MonitorSlotProfile(
+                    modelName: "DELL P3225QE",
+                    slotIndex: 0,
+                    targetFrame: DisplayFrame(origin: .init(x: -1013, y: -2160), size: .init(width: 3840, height: 2160)),
+                    targetResolution: .init(width: 3840, height: 2160)
+                ),
+            ],
+            updatedAt: Date()
+        )
+        try store.saveProfiles([oldProfile])
+
+        coordinator.migrateProfilesIfNeeded()
+
+        let profiles = try store.loadProfiles()
+        XCTAssertEqual(profiles.count, 1)
+        XCTAssertEqual(profiles[0].signatureRawValue, "Built-in Displayx1|DELL P3225QEx1")
+        XCTAssertEqual(profiles[0].slots[0].modelName, "Built-in Display")
     }
 
     func testNoProfileMeansNoApply() async {
@@ -466,41 +572,8 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         XCTAssertEqual(dellSlot.targetFrame.origin.x, -1013,
             "Dell slot must get the source Dell's position")
         
-        let builtInSlot = newProfile.slots.first { $0.modelName == "Built-in Retina Display" }!
+        let builtInSlot = newProfile.slots.first { $0.modelName == "Built-in Display" }!
         XCTAssertEqual(builtInSlot.targetResolution, DisplaySize(width: 3840, height: 2486),
             "Built-in slot must get built-in's resolution (3840x2486), not Dell's (3840x2160)")
     }
-}
-
-private final class MockDisplayManager: DisplayManaging {
-    var displays: [DisplaySnapshot]
-    var applied: [DisplayConfiguration] = []
-
-    init(displays: [DisplaySnapshot]) {
-        self.displays = displays
-    }
-
-    func currentDisplays() -> [DisplaySnapshot] {
-        displays
-    }
-
-    func apply(configuration: DisplayConfiguration, to display: DisplaySnapshot) throws {
-        applied.append(configuration)
-    }
-}
-
-private final class InMemoryProfileStore: MonitorProfileStoring {
-    private var profiles: [MonitorSetProfile] = []
-
-    func loadProfiles() throws -> [MonitorSetProfile] {
-        profiles
-    }
-
-    func saveProfiles(_ profiles: [MonitorSetProfile]) throws {
-        self.profiles = profiles
-    }
-}
-
-private struct ImmediateSleepManager: SleepManaging {
-    func sleep(milliseconds: UInt64) async {}
 }
