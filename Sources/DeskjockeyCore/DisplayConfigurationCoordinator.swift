@@ -61,13 +61,16 @@ public final class DisplayConfigurationCoordinator {
         }
 
         let signature = MonitorSetSignature.from(displays: displays)
-        let sorted = displays.sortedByPosition()
+        let sortedForLog = displays.sorted {
+            if $0.normalizedModelName != $1.normalizedModelName { return $0.normalizedModelName < $1.normalizedModelName }
+            return $0.serialNumber < $1.serialNumber
+        }
         var summary = "Monitor set changed (\(displays.count) display(s), signature: \(signature.rawValue))"
-        for display in sorted {
+        for display in sortedForLog {
             let tag = display.isBuiltIn ? " (built-in)" : ""
             let res = "\(display.resolution.width)x\(display.resolution.height)"
             let origin = "(\(display.frame.origin.x), \(display.frame.origin.y))"
-            summary += "\n  #\(display.runtimeID) \(display.normalizedModelName)\(tag)  \(res)  at \(origin)"
+            summary += "\n  #\(display.runtimeID) \(display.normalizedModelName)\(tag)  \(res)  at \(origin)  serial:\(display.serialNumber) port:\(display.portIdentifier)"
         }
         logger.info(summary)
 
@@ -84,11 +87,16 @@ public final class DisplayConfigurationCoordinator {
             return
         }
 
-        let pairs = DisplayMatcher.pair(liveDisplays: displays, profileSlots: profile.slots)
+        let (pairs, assignment) = SlotResolver.pair(
+            liveDisplays: displays,
+            profileSlots: profile.slots,
+            knownAssignments: profile.knownAssignments,
+            now: now()
+        )
         logger.info("Applying profile with \(pairs.count) display(s)")
 
-        // Update lastUsedAt for this profile
-        recordProfileUsed()
+        // Update lastUsedAt and record slot assignment for this profile
+        recordProfileUsed(assignment: assignment)
 
         for pair in pairs {
             let displayLabel = Self.label(for: pair.display)
@@ -141,30 +149,40 @@ public final class DisplayConfigurationCoordinator {
 
         let signature = MonitorSetSignature.from(displays: displays)
         let resolutionSignature = ResolutionSetSignature.from(displays: displays)
-        let slots = SlotPlanner.indexedSlots(for: displays)
-            .flatMap { modelName, indexed in
-                indexed.map { item in
-                    MonitorSlotProfile(
-                        modelName: modelName,
-                        slotIndex: item.slotIndex,
-                        targetFrame: item.display.frame,
-                        targetResolution: item.display.resolution
-                    )
-                }
-            }
-            .sorted {
-                if $0.modelName != $1.modelName { return $0.modelName < $1.modelName }
-                return $0.slotIndex < $1.slotIndex
-            }
 
         do {
             var profiles = try profileStore.loadProfiles()
-            let existingLastUsedAt = profiles.first(where: { $0.signature == signature })?.lastUsedAt
+            let existingProfile = profiles.first(where: { $0.signature == signature })
+            let existingLastUsedAt = existingProfile?.lastUsedAt
+            var assignments = existingProfile?.knownAssignments ?? []
+
+            let resolution = SlotResolver.resolve(
+                displays: displays,
+                knownAssignments: assignments,
+                now: now()
+            )
+
+            let slots = resolution.pairs
+                .map { display, slotIndex in
+                    MonitorSlotProfile(
+                        modelName: display.normalizedModelName,
+                        slotIndex: slotIndex,
+                        targetFrame: display.frame,
+                        targetResolution: display.resolution
+                    )
+                }
+                .sorted {
+                    if $0.modelName != $1.modelName { return $0.modelName < $1.modelName }
+                    return $0.slotIndex < $1.slotIndex
+                }
+
+            assignments.upsert(resolution.assignment)
             profiles.removeAll { $0.signature == signature }
 
             let newProfile = MonitorSetProfile(
                 signature: signature,
                 slots: slots,
+                knownAssignments: assignments,
                 updatedAt: now(),
                 lastUsedAt: existingLastUsedAt,
                 resolutionSignature: resolutionSignature
@@ -216,19 +234,37 @@ public final class DisplayConfigurationCoordinator {
         let savedProfile = (try? profileStore.loadProfiles())?.first { $0.signature == signature }
         let pairs: [(display: DisplaySnapshot, slot: MonitorSlotProfile)]?
         if let savedProfile {
-            pairs = DisplayMatcher.pair(liveDisplays: displays, profileSlots: savedProfile.slots)
+            let result = SlotResolver.pair(
+                liveDisplays: displays,
+                profileSlots: savedProfile.slots,
+                knownAssignments: savedProfile.knownAssignments
+            )
+            pairs = result.pairs
         } else {
             pairs = nil
         }
 
-        // Sort left-to-right, top-to-bottom -- consistent with SlotPlanner ordering
-        let sorted = displays.sortedByPosition()
+        // Resolve slot indices for consistent ordering (model name, then slot index).
+        let resolution = SlotResolver.resolve(
+            displays: displays,
+            knownAssignments: savedProfile?.knownAssignments ?? []
+        )
+        let slotIndexByRuntimeID = Dictionary(
+            uniqueKeysWithValues: resolution.pairs.map { ($0.display.runtimeID, $0.slotIndex) }
+        )
+        let sorted = displays.sorted {
+            if $0.normalizedModelName != $1.normalizedModelName {
+                return $0.normalizedModelName < $1.normalizedModelName
+            }
+            let lhsSlot = slotIndexByRuntimeID[$0.runtimeID] ?? 0
+            let rhsSlot = slotIndexByRuntimeID[$1.runtimeID] ?? 0
+            return lhsSlot < rhsSlot
+        }
 
         return sorted.map { display in
             let matchesSaved: Bool
             if let pairs, let pair = pairs.first(where: { $0.display.runtimeID == display.runtimeID }) {
                 if display.isBuiltIn {
-                    // Only compare position for built-in displays
                     matchesSaved = display.frame == pair.slot.targetFrame
                 } else {
                     matchesSaved = display.frame == pair.slot.targetFrame
@@ -304,24 +340,37 @@ public final class DisplayConfigurationCoordinator {
             return $0.normalizedModelName < $1.normalizedModelName
         }
 
-        let slots: [MonitorSlotProfile] = zip(sortedSourceSlots, sortedDisplays).map { sourceSlot, display in
-            MonitorSlotProfile(
+        var slots: [MonitorSlotProfile] = []
+        var assignmentEntries: [SlotAssignmentEntry] = []
+        for (sourceSlot, display) in zip(sortedSourceSlots, sortedDisplays) {
+            slots.append(MonitorSlotProfile(
                 modelName: display.normalizedModelName,
                 slotIndex: sourceSlot.slotIndex,
                 targetFrame: sourceSlot.targetFrame,
                 targetResolution: sourceSlot.targetResolution
-            )
+            ))
+            assignmentEntries.append(SlotAssignmentEntry(
+                modelName: display.normalizedModelName,
+                slotIndex: sourceSlot.slotIndex,
+                serialNumber: display.serialNumber,
+                portIdentifier: display.portIdentifier
+            ))
         }
+        let assignment = SlotAssignment(entries: assignmentEntries, lastUsedAt: now())
 
         // Save the new profile
         do {
             var profiles = try profileStore.loadProfiles()
-            let existingLastUsedAt = profiles.first(where: { $0.signature == currentSignature })?.lastUsedAt
+            let existingProfile = profiles.first(where: { $0.signature == currentSignature })
+            let existingLastUsedAt = existingProfile?.lastUsedAt
+            var assignments = existingProfile?.knownAssignments ?? []
+            assignments.upsert(assignment)
             profiles.removeAll { $0.signature == currentSignature }
 
             let newProfile = MonitorSetProfile(
                 signature: currentSignature,
                 slots: slots,
+                knownAssignments: assignments,
                 updatedAt: now(),
                 lastUsedAt: existingLastUsedAt,
                 resolutionSignature: currentResolutionSignature
@@ -357,20 +406,21 @@ public final class DisplayConfigurationCoordinator {
 
     // MARK: - Profile Usage Tracking
 
-    /// Updates the lastUsedAt date for the profile matching the current signature.
-    /// Called when a profile is successfully applied.
-    public func recordProfileUsed() {
+    /// Updates the lastUsedAt date and optionally records a slot assignment
+    /// for the profile matching the current signature.
+    private func recordProfileUsed(assignment: SlotAssignment? = nil) {
         guard let currentSignature = currentSignature() else { return }
         
         do {
             var profiles = try profileStore.loadProfiles()
             if let index = profiles.firstIndex(where: { $0.signature == currentSignature }) {
                 profiles[index].lastUsedAt = now()
-                // Also ensure resolution signature is set for backward compatibility
+                if let assignment {
+                    profiles[index].knownAssignments.upsert(assignment)
+                }
                 if profiles[index].resolutionSignatureRawValue == nil {
                     let displays = displayManager.currentDisplays()
-                    let resolutionSignature = ResolutionSetSignature.from(displays: displays)
-                    profiles[index].resolutionSignatureRawValue = resolutionSignature.rawValue
+                    profiles[index].resolutionSignatureRawValue = ResolutionSetSignature.from(displays: displays).rawValue
                 }
                 try profileStore.saveProfiles(profiles)
             }

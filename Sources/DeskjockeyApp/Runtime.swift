@@ -216,6 +216,8 @@ final class MacDisplayManager: DisplayManaging {
         return DisplaySnapshot(
             runtimeID: String(id),
             modelName: screen.localizedName,
+            serialNumber: CGDisplaySerialNumber(id),
+            portIdentifier: CGDisplayUnitNumber(id),
             isBuiltIn: CGDisplayIsBuiltin(id) != 0,
             frame: DisplayFrame(
                 origin: DisplayPoint(x: Int(bounds.origin.x), y: Int(bounds.origin.y)),

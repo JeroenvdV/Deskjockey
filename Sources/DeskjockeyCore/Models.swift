@@ -40,13 +40,6 @@ public struct DisplayFrame: Codable, Hashable, Sendable {
         self.origin = origin
         self.size = size
     }
-
-    /// Used by DisplayMatcher to find the nearest saved slot for a live display.
-    var center: (x: Double, y: Double) {
-        let centerX = Double(origin.x) + (Double(size.width) / 2.0)
-        let centerY = Double(origin.y) + (Double(size.height) / 2.0)
-        return (centerX, centerY)
-    }
 }
 
 // MARK: - Display snapshot
@@ -57,6 +50,8 @@ public struct DisplayFrame: Codable, Hashable, Sendable {
 public struct DisplaySnapshot: Codable, Hashable, Sendable {
     public var runtimeID: String
     public var modelName: String
+    public var serialNumber: UInt32
+    public var portIdentifier: UInt32
     public var isBuiltIn: Bool
     public var frame: DisplayFrame
     public var resolution: DisplaySize
@@ -64,12 +59,16 @@ public struct DisplaySnapshot: Codable, Hashable, Sendable {
     public init(
         runtimeID: String,
         modelName: String,
+        serialNumber: UInt32 = 0,
+        portIdentifier: UInt32 = 0,
         isBuiltIn: Bool,
         frame: DisplayFrame,
         resolution: DisplaySize
     ) {
         self.runtimeID = runtimeID
         self.modelName = modelName
+        self.serialNumber = serialNumber
+        self.portIdentifier = portIdentifier
         self.isBuiltIn = isBuiltIn
         self.frame = frame
         self.resolution = resolution
@@ -187,12 +186,60 @@ public struct MonitorSlotProfile: Codable, Hashable, Sendable {
     }
 }
 
+// MARK: - Slot assignments
+
+/// Records which physical monitors occupied which slots during a specific
+/// connection event. Identified by the set of serial numbers.
+public struct SlotAssignment: Codable, Hashable, Sendable {
+    public var entries: [SlotAssignmentEntry]
+    public var lastUsedAt: Date
+
+    public init(entries: [SlotAssignmentEntry], lastUsedAt: Date) {
+        self.entries = entries
+        self.lastUsedAt = lastUsedAt
+    }
+}
+
+/// Maps a single physical monitor to a slot within a profile.
+public struct SlotAssignmentEntry: Codable, Hashable, Sendable {
+    public var modelName: String
+    public var slotIndex: Int
+    public var serialNumber: UInt32
+    public var portIdentifier: UInt32
+
+    public init(modelName: String, slotIndex: Int, serialNumber: UInt32, portIdentifier: UInt32) {
+        self.modelName = modelName
+        self.slotIndex = slotIndex
+        self.serialNumber = serialNumber
+        self.portIdentifier = portIdentifier
+    }
+}
+
+extension Array where Element == SlotAssignment {
+    /// Upserts an assignment, matching by the set of serial numbers.
+    /// If a matching set exists, replaces it; otherwise appends.
+    public mutating func upsert(_ new: SlotAssignment) {
+        let newSerials = Set(new.entries.map { $0.serialNumber })
+        if let index = firstIndex(where: { Set($0.entries.map { $0.serialNumber }) == newSerials }) {
+            self[index] = new
+        } else {
+            append(new)
+        }
+    }
+}
+
 /// A complete saved arrangement for a specific set of monitors.
 /// Keyed by MonitorSetSignature so it can be looked up when the same
 /// combination of monitor models is detected.
-public struct MonitorSetProfile: Codable, Hashable, Sendable {
+///
+/// Contains two kinds of data:
+/// - **Arrangement** (slots): the target position and resolution for each slot
+/// - **Assignments** (knownAssignments): which physical monitors (by serial/port)
+///   have been seen in which slots
+public struct MonitorSetProfile: Hashable, Sendable {
     public var signatureRawValue: String
     public var slots: [MonitorSlotProfile]
+    public var knownAssignments: [SlotAssignment]
     public var updatedAt: Date
     public var lastUsedAt: Date?
     public var resolutionSignatureRawValue: String?
@@ -200,12 +247,14 @@ public struct MonitorSetProfile: Codable, Hashable, Sendable {
     public init(
         signature: MonitorSetSignature,
         slots: [MonitorSlotProfile],
+        knownAssignments: [SlotAssignment] = [],
         updatedAt: Date = Date(),
         lastUsedAt: Date? = nil,
         resolutionSignature: ResolutionSetSignature? = nil
     ) {
         self.signatureRawValue = signature.rawValue
         self.slots = slots
+        self.knownAssignments = knownAssignments
         self.updatedAt = updatedAt
         self.lastUsedAt = lastUsedAt
         self.resolutionSignatureRawValue = resolutionSignature?.rawValue
@@ -221,124 +270,196 @@ public struct MonitorSetProfile: Codable, Hashable, Sendable {
     }
 }
 
-// MARK: - Slot planning
+// Custom Codable for backward compatibility: old profiles on disk
+// don't have knownAssignments, so we decode it with a fallback to [].
+extension MonitorSetProfile: Codable {
+    enum CodingKeys: String, CodingKey {
+        case signatureRawValue, slots, knownAssignments, updatedAt
+        case lastUsedAt, resolutionSignatureRawValue
+    }
 
-public enum SlotPlanner {
-    /// Assigns deterministic slot indexes to displays of the same model by their
-    /// physical position (left-to-right, top-to-bottom). This ensures that two
-    /// identical monitors get consistent slot numbers regardless of which port
-    /// or cable they're connected to.
-    public static func indexedSlots(
-        for displays: [DisplaySnapshot]
-    ) -> [String: [IndexedDisplay]] {
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        signatureRawValue = try container.decode(String.self, forKey: .signatureRawValue)
+        slots = try container.decode([MonitorSlotProfile].self, forKey: .slots)
+        knownAssignments = try container.decodeIfPresent([SlotAssignment].self, forKey: .knownAssignments) ?? []
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        lastUsedAt = try container.decodeIfPresent(Date.self, forKey: .lastUsedAt)
+        resolutionSignatureRawValue = try container.decodeIfPresent(String.self, forKey: .resolutionSignatureRawValue)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(signatureRawValue, forKey: .signatureRawValue)
+        try container.encode(slots, forKey: .slots)
+        try container.encode(knownAssignments, forKey: .knownAssignments)
+        try container.encode(updatedAt, forKey: .updatedAt)
+        try container.encodeIfPresent(lastUsedAt, forKey: .lastUsedAt)
+        try container.encodeIfPresent(resolutionSignatureRawValue, forKey: .resolutionSignatureRawValue)
+    }
+}
+
+// MARK: - Slot resolution
+
+/// Resolves which live display should occupy which slot index.
+///
+/// Replaces the former position-based SlotPlanner and DisplayMatcher.
+/// Position is output of the application and is never used as input for
+/// ordering, grouping, or matching. Instead, physical monitors are
+/// identified by serial number, with port identifier as a fallback.
+///
+/// Priority chain within each model-name group:
+/// 1. Serial match — known serial → known slot index
+/// 2. Elimination — if one unresolved display and one unresolved slot remain
+/// 3. Port match — same port identifier → same slot index
+/// 4. Alphabetical — serial ascending (nonzero first), then port ascending
+public enum SlotResolver {
+
+    /// Resolves slot indices for a set of displays using known assignments.
+    /// Returns the resolved pairs and a new assignment record to persist.
+    public static func resolve(
+        displays: [DisplaySnapshot],
+        knownAssignments: [SlotAssignment],
+        now: Date = Date()
+    ) -> (pairs: [(display: DisplaySnapshot, slotIndex: Int)], assignment: SlotAssignment) {
         let grouped = Dictionary(grouping: displays, by: { $0.normalizedModelName })
-        var result: [String: [IndexedDisplay]] = [:]
+        var allPairs: [(display: DisplaySnapshot, slotIndex: Int)] = []
+        var allEntries: [SlotAssignmentEntry] = []
 
         for (modelName, modelDisplays) in grouped {
-            let sorted = modelDisplays.sortedByPosition()
-            result[modelName] = sorted.enumerated().map { index, display in
-                IndexedDisplay(slotIndex: index, display: display)
-            }
+            let resolved = resolveModelGroup(
+                modelName: modelName,
+                displays: modelDisplays,
+                knownAssignments: knownAssignments
+            )
+            allPairs.append(contentsOf: resolved)
+            allEntries.append(contentsOf: resolved.map { display, slotIndex in
+                SlotAssignmentEntry(
+                    modelName: modelName,
+                    slotIndex: slotIndex,
+                    serialNumber: display.serialNumber,
+                    portIdentifier: display.portIdentifier
+                )
+            })
         }
-        return result
+
+        let assignment = SlotAssignment(entries: allEntries, lastUsedAt: now)
+        return (allPairs, assignment)
     }
-}
 
-public struct IndexedDisplay: Hashable, Sendable {
-    public var slotIndex: Int
-    public var display: DisplaySnapshot
-
-    public init(slotIndex: Int, display: DisplaySnapshot) {
-        self.slotIndex = slotIndex
-        self.display = display
-    }
-}
-
-// MARK: - Display matching
-
-public enum DisplayMatcher {
-    /// Pairs saved profile slots with currently connected displays of the same model.
-    /// Uses nearest-center-point matching so that if two identical monitors are present,
-    /// each gets matched to the slot whose saved position is closest to its current
-    /// position. This handles the case where runtime IDs changed (different desk/dock)
-    /// but the physical layout is similar.
+    /// Convenience: resolves slot indices and pairs with existing profile slots.
     public static func pair(
         liveDisplays: [DisplaySnapshot],
-        profileSlots: [MonitorSlotProfile]
-    ) -> [(display: DisplaySnapshot, slot: MonitorSlotProfile)] {
-        let displaysByModel = Dictionary(grouping: liveDisplays, by: \.normalizedModelName)
-        let slotsByModel = Dictionary(grouping: profileSlots, by: \.modelName)
-        var result: [(display: DisplaySnapshot, slot: MonitorSlotProfile)] = []
+        profileSlots: [MonitorSlotProfile],
+        knownAssignments: [SlotAssignment],
+        now: Date = Date()
+    ) -> (pairs: [(display: DisplaySnapshot, slot: MonitorSlotProfile)], assignment: SlotAssignment) {
+        let resolution = resolve(
+            displays: liveDisplays,
+            knownAssignments: knownAssignments,
+            now: now
+        )
 
-        for (modelName, slots) in slotsByModel {
-            var unmatchedDisplays = (displaysByModel[modelName] ?? []).sortedByPosition()
-            let sortedSlots = slots.sorted(by: { $0.slotIndex < $1.slotIndex })
+        let slotsByModelAndIndex = Dictionary(
+            grouping: profileSlots,
+            by: { "\($0.modelName)#\($0.slotIndex)" }
+        )
 
-            for slot in sortedSlots {
-                guard !unmatchedDisplays.isEmpty else { break }
-                let nearestIndex = unmatchedDisplays
-                    .enumerated()
-                    .min { lhs, rhs in
-                        let leftDistance = squaredDistance(from: lhs.element.frame, to: slot.targetFrame)
-                        let rightDistance = squaredDistance(from: rhs.element.frame, to: slot.targetFrame)
-                        if leftDistance != rightDistance {
-                            return leftDistance < rightDistance
-                        }
-                        return lhs.element.runtimeID < rhs.element.runtimeID
-                    }?
-                    .offset ?? 0
-                let display = unmatchedDisplays.remove(at: nearestIndex)
-                result.append((display: display, slot: slot))
+        let pairs: [(display: DisplaySnapshot, slot: MonitorSlotProfile)] = resolution.pairs.compactMap {
+            display, slotIndex in
+            let key = "\(display.normalizedModelName)#\(slotIndex)"
+            guard let slot = slotsByModelAndIndex[key]?.first else { return nil }
+            return (display, slot)
+        }
+
+        return (pairs, resolution.assignment)
+    }
+
+    // MARK: - Private
+
+    private static func resolveModelGroup(
+        modelName: String,
+        displays: [DisplaySnapshot],
+        knownAssignments: [SlotAssignment]
+    ) -> [(display: DisplaySnapshot, slotIndex: Int)] {
+        if displays.count == 1 {
+            return [(displays[0], 0)]
+        }
+
+        // Build lookup tables from all known assignments for this model.
+        // Later assignments override earlier ones (more recent data wins).
+        var serialToSlot: [UInt32: Int] = [:]
+        var portToSlot: [UInt32: Int] = [:]
+        for assignment in knownAssignments {
+            for entry in assignment.entries where entry.modelName == modelName {
+                if entry.serialNumber != 0 {
+                    serialToSlot[entry.serialNumber] = entry.slotIndex
+                }
+                if entry.portIdentifier != 0 {
+                    portToSlot[entry.portIdentifier] = entry.slotIndex
+                }
             }
         }
 
-        return result
-    }
+        var resolved: [(display: DisplaySnapshot, slotIndex: Int)] = []
+        var unresolvedDisplays = displays
+        var usedSlotIndices = Set<Int>()
 
-    /// Squared Euclidean distance between frame centers. No sqrt needed since
-    /// we only compare relative distances, not absolute values.
-    private static func squaredDistance(from lhs: DisplayFrame, to rhs: DisplayFrame) -> Double {
-        let lhsCenter = lhs.center
-        let rhsCenter = rhs.center
-        let dx = lhsCenter.x - rhsCenter.x
-        let dy = lhsCenter.y - rhsCenter.y
-        return (dx * dx) + (dy * dy)
-    }
-}
-
-// MARK: - Sorting helpers
-
-/// Sorting extension for DisplaySnapshot arrays to ensure consistent ordering
-/// across the codebase. Displays are sorted left-to-right, then top-to-bottom,
-/// with runtime ID as a final tiebreaker for deterministic ordering.
-extension Array where Element == DisplaySnapshot {
-    /// Sorts displays by their physical position (left-to-right, top-to-bottom).
-    /// Used consistently throughout the app for display ordering in menus and matching.
-    public func sortedByPosition() -> [DisplaySnapshot] {
-        self.sorted {
-            if $0.frame.origin.x != $1.frame.origin.x {
-                return $0.frame.origin.x < $1.frame.origin.x
+        // Step 1: Serial match
+        for display in displays where display.serialNumber != 0 {
+            if let slotIndex = serialToSlot[display.serialNumber],
+               !usedSlotIndices.contains(slotIndex),
+               slotIndex < displays.count {
+                resolved.append((display, slotIndex))
+                usedSlotIndices.insert(slotIndex)
+                unresolvedDisplays.removeAll { $0.runtimeID == display.runtimeID }
             }
-            if $0.frame.origin.y != $1.frame.origin.y {
-                return $0.frame.origin.y < $1.frame.origin.y
-            }
-            return $0.runtimeID < $1.runtimeID
         }
-    }
-}
 
-/// Sorting extension for MonitorSlotProfile arrays to ensure consistent ordering
-/// across the codebase. Slots are sorted by their target frame position (left-to-right, top-to-bottom).
-extension Array where Element == MonitorSlotProfile {
-    /// Sorts slot profiles by their target frame position (left-to-right, top-to-bottom).
-    /// Used for consistent slot ordering when copying profiles between similar setups.
-    public func sortedByPosition() -> [MonitorSlotProfile] {
-        self.sorted {
-            if $0.targetFrame.origin.x != $1.targetFrame.origin.x {
-                return $0.targetFrame.origin.x < $1.targetFrame.origin.x
+        // Step 2: Elimination
+        if unresolvedDisplays.count == 1 {
+            let remaining = Set(0..<displays.count).subtracting(usedSlotIndices)
+            if remaining.count == 1, let slotIndex = remaining.first {
+                resolved.append((unresolvedDisplays[0], slotIndex))
+                usedSlotIndices.insert(slotIndex)
+                unresolvedDisplays.removeAll()
             }
-            return $0.targetFrame.origin.y < $1.targetFrame.origin.y
         }
+
+        // Step 3: Port match
+        if !unresolvedDisplays.isEmpty {
+            var stillUnresolved: [DisplaySnapshot] = []
+            for display in unresolvedDisplays {
+                if display.portIdentifier != 0,
+                   let slotIndex = portToSlot[display.portIdentifier],
+                   !usedSlotIndices.contains(slotIndex),
+                   slotIndex < displays.count {
+                    resolved.append((display, slotIndex))
+                    usedSlotIndices.insert(slotIndex)
+                } else {
+                    stillUnresolved.append(display)
+                }
+            }
+            unresolvedDisplays = stillUnresolved
+        }
+
+        // Step 4: Alphabetical fallback
+        if !unresolvedDisplays.isEmpty {
+            let sorted = unresolvedDisplays.sorted {
+                if $0.serialNumber != $1.serialNumber {
+                    if $0.serialNumber == 0 { return false }
+                    if $1.serialNumber == 0 { return true }
+                    return $0.serialNumber < $1.serialNumber
+                }
+                return $0.portIdentifier < $1.portIdentifier
+            }
+            let remainingIndices = Set(0..<displays.count).subtracting(usedSlotIndices).sorted()
+            for (display, slotIndex) in zip(sorted, remainingIndices) {
+                resolved.append((display, slotIndex))
+            }
+        }
+
+        return resolved
     }
 }
 

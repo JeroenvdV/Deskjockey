@@ -37,12 +37,18 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         XCTAssertEqual(profiles[0].slots.count, 2)
     }
 
+    /// Tests that two identical monitors at a new desk get correct slot assignments
+    /// via port matching. Original monitors (serials 100, 200) were on ports 5, 7.
+    /// New monitors (serials 300, 400) are on the same ports → port match assigns
+    /// the same slots → correct positions applied.
     func testReapplyMatchesNewRuntimeIDsForIdenticalHardware() async throws {
         let store = InMemoryProfileStore()
 
         let originalLeft = DisplaySnapshot(
             runtimeID: "ORIG-LEFT",
             modelName: "Dell U2405",
+            serialNumber: 100,
+            portIdentifier: 5,
             isBuiltIn: false,
             frame: DisplayFrame(origin: .init(x: -1920, y: 0), size: .init(width: 1920, height: 1200)),
             resolution: .init(width: 1920, height: 1200)
@@ -50,6 +56,8 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         let originalRight = DisplaySnapshot(
             runtimeID: "ORIG-RIGHT",
             modelName: "Dell U2405",
+            serialNumber: 200,
+            portIdentifier: 7,
             isBuiltIn: false,
             frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1200)),
             resolution: .init(width: 1920, height: 1200)
@@ -63,10 +71,13 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         )
         try captureCoordinator.captureCurrentSetup()
 
-        // Simulate moving to a new desk: same model monitors, different runtime IDs and port order.
+        // New desk: same model, different serials, but same port identifiers.
+        // Port matching should assign the same slots.
         let liveRightNow = DisplaySnapshot(
             runtimeID: "NEW-B",
             modelName: "Dell U2405",
+            serialNumber: 400,
+            portIdentifier: 7,
             isBuiltIn: false,
             frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1200)),
             resolution: .init(width: 1280, height: 800)
@@ -74,6 +85,8 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         let liveLeftNow = DisplaySnapshot(
             runtimeID: "NEW-A",
             modelName: "Dell U2405",
+            serialNumber: 300,
+            portIdentifier: 5,
             isBuiltIn: false,
             frame: DisplayFrame(origin: .init(x: -1920, y: 0), size: .init(width: 1920, height: 1200)),
             resolution: .init(width: 1024, height: 768)
@@ -217,7 +230,7 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.hasSavedProfile())
     }
 
-    func testDisplaySummariesOrderedLeftToRight() throws {
+    func testDisplaySummariesOrderedByModelName() throws {
         let right = DisplaySnapshot(
             runtimeID: "R",
             modelName: "Dell U2405",
@@ -243,10 +256,11 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
 
         let summaries = coordinator.displaySummaries()
         XCTAssertEqual(summaries.count, 2)
-        XCTAssertEqual(summaries[0].modelName, "MacBook Pro Display")
-        XCTAssertTrue(summaries[0].isBuiltIn)
-        XCTAssertEqual(summaries[1].modelName, "Dell U2405")
-        XCTAssertFalse(summaries[1].isBuiltIn)
+        // Sorted alphabetically by model name, not by position
+        XCTAssertEqual(summaries[0].modelName, "Dell U2405")
+        XCTAssertFalse(summaries[0].isBuiltIn)
+        XCTAssertEqual(summaries[1].modelName, "MacBook Pro Display")
+        XCTAssertTrue(summaries[1].isBuiltIn)
     }
 
     func testCurrentSetupMatchesSavedAfterCapture() throws {
