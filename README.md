@@ -33,13 +33,13 @@ swapping a USB-C side or using a different dock just works.
 - **Automatic profile switching** -- detects monitor changes and reapplies your saved layout within seconds.
 - **Visual feedback** -- menu bar icon flashes green when a display change is processed, and the menu shows how long ago the last change was handled.
 - **Per-display sync status** -- see at a glance which monitors match your saved profile and which don't.
-- **Cable/port agnostic** -- matches monitors by model name, not by runtime ID. Move to a different dock or swap cables freely.
+- **Cable/port agnostic** -- matches monitors by model name and serial number, not by runtime ID. Move to a different dock or swap cables freely.
 - **Multi-monitor aware** -- handles any number of displays, including duplicate models (e.g. two identical external monitors at different positions).
 - **Single instance** -- launching a second copy signals the running instance to show its menu, then exits.
 - **Menu bar native** -- lives in your menu bar with a single icon. No windows, no Dock clutter.
 - **Launch at Login** -- set it and forget it.
 - **Copy Similar Setup** -- when you connect to a new setup with the same native resolutions as a previously saved setup, you can copy that configuration. The most recently used matching setup is offered. Only available when a matching setup exists.
-- **Open Config File** -- open the JSON configuration file directly from the menu bar to edit it manually. The app automatically reloads the configuration after external changes.
+- **Open Config File** -- open the JSON configuration file directly from the menu bar to edit it manually.
 
 ## How It Works
 
@@ -154,7 +154,8 @@ Your saved profiles are preserved across updates.
 
 ```
 DeskjockeyCore (framework, platform-independent)
-├── Models.swift             # DisplaySnapshot, MonitorSetSignature, SlotPlanner, DisplayMatcher
+├── Models.swift             # DisplaySnapshot, signatures, profile types
+├── SlotResolver.swift       # Serial/port-based monitor-to-slot matching
 ├── DisplayConfigurationCoordinator.swift   # Profile capture, reapply, sync checking
 ├── ProfileStore.swift       # JSON persistence
 ├── DisplayManaging.swift    # Protocols + FileLogger
@@ -162,7 +163,7 @@ DeskjockeyCore (framework, platform-independent)
 └── Errors.swift             # Typed error enums
 
 DeskjockeyApp (macOS app target)
-├── DeskjockeyAppMain.swift    # App entry point
+├── DeskjockeyAppMain.swift  # App entry point, single-instance lock
 ├── AppDelegate.swift        # Menu bar UI, display change handling
 └── Runtime.swift            # CoreGraphics display manager, login items
 ```

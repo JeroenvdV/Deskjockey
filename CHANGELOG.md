@@ -4,12 +4,28 @@ All notable changes to Deskjockey are documented in this file.
 
 ## Unreleased
 
-- Added comprehensive test coverage: 52 tests covering core functionality (was 18)
-- Test coverage improved: 88.7% function coverage, 93.4% line coverage (was 67.4%, 83.3%)
-- Added tests for ProfileStore, Debouncer, FileLogger, and error handling in Coordinator
-- Refactored duplicate display sorting logic into reusable `sortedByPosition()` extensions
-- Fixed FileWatcher to monitor specific file instead of parent directory
-- Added comprehensive coding guidelines and architecture documentation to DEVELOPMENT.md
+## 1.2.0 - 2026-05-22
+
+### Bug fixes
+
+- **Fixed built-in display matching across macOS name variants.** macOS reports the laptop screen as "Built-in Display" or "Built-in Retina Display" depending on context. Profiles saved under one name now match the other. Existing profiles are migrated automatically on first launch. (Closes #1)
+- Fixed `lastUsedAt` being wiped when re-capturing a profile after apply
+- Fixed app icon not appearing (was missing from Info.plist due to build config issue)
+- Fixed Info.plist using hardcoded version instead of build variables
+
+### New features
+
+- **Application icon** -- Deskjockey now has a custom app icon visible in Finder and Activity Monitor
+- **Copy Similar Setup** -- when connecting to monitors with the same native resolutions as a previously saved setup (but different model names), you can copy that configuration
+- **Open Config File** -- open the JSON profiles file directly from the menu bar
+
+### Architecture
+
+- Replaced position-based slot assignment with serial/port-based `SlotResolver` -- monitors are now identified by serial number first, then port, then alphabetically. Position is never used as input for matching
+- Extracted `SlotResolver` from `Models.swift` into its own file
+- Deduplicated test mocks into shared `TestHelpers.swift`
+- Removed `FileWatcher` and config file reload feature (non-core, had false-positive issues)
+- Test suite refined to 32 focused behavior-level tests
 
 ## 1.1.0 - 2026-05-04
 
