@@ -853,6 +853,130 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         XCTAssertNotNil(profiles[0].resolutionSignatureRawValue)
         XCTAssertEqual(profiles[0].resolutionSignature?.rawValue, "1920x1200x1")
     }
+
+    /// Migration must recompute resolution signatures written by older versions
+    /// that used area-descending ordering. The canonical ordering is now
+    /// DisplaySize.Comparable (width ascending, then height ascending).
+    func testMigrateRecomputesOldAreaDescendingSignature() throws {
+        let store = InMemoryProfileStore()
+        let manager = MockDisplayManager(displays: [])
+        let coordinator = DisplayConfigurationCoordinator(
+            displayManager: manager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+
+        // Profile with old area-descending signature: 3840x2486 (larger area) before 3840x2160
+        let oldProfile = MonitorSetProfile(
+            signature: MonitorSetSignature(rawValue: "Built-in Retina Displayx1|DELL P3225QEx1"),
+            slots: [
+                MonitorSlotProfile(
+                    modelName: "Built-in Retina Display",
+                    slotIndex: 0,
+                    targetFrame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1243)),
+                    targetResolution: .init(width: 3840, height: 2486)
+                ),
+                MonitorSlotProfile(
+                    modelName: "DELL P3225QE",
+                    slotIndex: 0,
+                    targetFrame: DisplayFrame(origin: .init(x: -1013, y: -2160), size: .init(width: 3840, height: 2160)),
+                    targetResolution: .init(width: 3840, height: 2160)
+                ),
+            ],
+            updatedAt: Date()
+        )
+        // Manually set the OLD area-descending signature
+        var mutable = oldProfile
+        mutable.resolutionSignatureRawValue = "3840x2486x1|3840x2160x1"
+        try store.saveProfiles([mutable])
+
+        coordinator.migrateProfilesIfNeeded()
+
+        let profiles = try store.loadProfiles()
+        XCTAssertEqual(profiles.count, 1)
+        // Canonical ordering: width ascending, then height ascending
+        // Both have width 3840, so sort by height: 2160 < 2486
+        XCTAssertEqual(profiles[0].resolutionSignature?.rawValue, "3840x2160x1|3840x2486x1")
+    }
+
+    /// Copy Similar Setup must pair by resolution, not by position.
+    /// Source: built-in at origin + Dell above-left (like user's home arrangement).
+    /// Target: built-in at origin + Dell to-the-right (different physical layout).
+    /// The Dell slot (3840x2160) must pair with the Dell display (3840x2160),
+    /// not cross-match with the built-in (3840x2486).
+    func testCopySimilarSetupPairsByResolutionNotPosition() throws {
+        let store = InMemoryProfileStore()
+
+        // Source profile: home arrangement — Dell above-left of built-in
+        let sourceBuiltIn = DisplaySnapshot(
+            runtimeID: "1",
+            modelName: "Built-in Retina Display",
+            isBuiltIn: true,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1243)),
+            resolution: .init(width: 3840, height: 2486)
+        )
+        let sourceDell = DisplaySnapshot(
+            runtimeID: "2",
+            modelName: "DELL P3225QE",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: -1013, y: -2160), size: .init(width: 3840, height: 2160)),
+            resolution: .init(width: 3840, height: 2160)
+        )
+        let sourceManager = MockDisplayManager(displays: [sourceBuiltIn, sourceDell])
+        let sourceCoordinator = DisplayConfigurationCoordinator(
+            displayManager: sourceManager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+        try sourceCoordinator.captureCurrentSetup()
+
+        // Target displays: office arrangement — Dell to the right of built-in
+        // Different model name but same resolutions → same resolution signature
+        let targetBuiltIn = DisplaySnapshot(
+            runtimeID: "10",
+            modelName: "Built-in Retina Display",
+            isBuiltIn: true,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1243)),
+            resolution: .init(width: 3840, height: 2486)
+        )
+        let targetDell = DisplaySnapshot(
+            runtimeID: "11",
+            modelName: "DELL P3223QE",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: 1920, y: 0), size: .init(width: 3840, height: 2160)),
+            resolution: .init(width: 3840, height: 2160)
+        )
+        let targetManager = MockDisplayManager(displays: [targetBuiltIn, targetDell])
+        let targetCoordinator = DisplayConfigurationCoordinator(
+            displayManager: targetManager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+
+        // Should find the source profile as a match
+        let match = targetCoordinator.findMostRecentMatchingProfileByResolution()
+        XCTAssertNotNil(match)
+
+        // Copy the similar setup
+        try targetCoordinator.copyProfileFromSimilarSetup(sourceProfile: match!)
+
+        // Verify: the Dell slot should have Dell's resolution, not built-in's
+        let profiles = try store.loadProfiles()
+        let newProfile = profiles.first { $0.signatureRawValue.contains("P3223QE") }!
+        
+        let dellSlot = newProfile.slots.first { $0.modelName == "DELL P3223QE" }!
+        XCTAssertEqual(dellSlot.targetResolution, DisplaySize(width: 3840, height: 2160),
+            "Dell slot must get Dell's resolution (3840x2160), not built-in's (3840x2486)")
+        XCTAssertEqual(dellSlot.targetFrame.origin.x, -1013,
+            "Dell slot must get the source Dell's position")
+        
+        let builtInSlot = newProfile.slots.first { $0.modelName == "Built-in Retina Display" }!
+        XCTAssertEqual(builtInSlot.targetResolution, DisplaySize(width: 3840, height: 2486),
+            "Built-in slot must get built-in's resolution (3840x2486), not Dell's (3840x2160)")
+    }
 }
 
 private final class MockDisplayManager: DisplayManaging {

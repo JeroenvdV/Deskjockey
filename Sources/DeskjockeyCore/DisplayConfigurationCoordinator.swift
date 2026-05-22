@@ -291,34 +291,26 @@ public final class DisplayConfigurationCoordinator {
         let currentSignature = MonitorSetSignature.from(displays: displays)
         let currentResolutionSignature = ResolutionSetSignature.from(displays: displays)
 
-        // Sort both the source slots and current displays by position
-        let sortedSourceSlots = sourceProfile.slots.sortedByPosition()
-        let sortedDisplays = displays.sortedByPosition()
+        // Pair source slots with current displays by resolution (canonical ordering).
+        // Position is output of the application and must never be used as input.
+        // Both sides are sorted by resolution (DisplaySize.Comparable), then model
+        // name, producing a stable pairing regardless of physical arrangement.
+        let sortedSourceSlots = sourceProfile.slots.sorted {
+            if $0.targetResolution != $1.targetResolution { return $0.targetResolution < $1.targetResolution }
+            return $0.modelName < $1.modelName
+        }
+        let sortedDisplays = displays.sorted {
+            if $0.resolution != $1.resolution { return $0.resolution < $1.resolution }
+            return $0.normalizedModelName < $1.normalizedModelName
+        }
 
-        // Create new slots by mapping source slots to current displays by position
-        // This assumes displays are in the same relative positions
-        let slots: [MonitorSlotProfile]
-        if sortedSourceSlots.count == sortedDisplays.count {
-            slots = zip(sortedSourceSlots, sortedDisplays).map { (sourceSlot, display) in
-                MonitorSlotProfile(
-                    modelName: display.normalizedModelName,
-                    slotIndex: sourceSlot.slotIndex,
-                    targetFrame: sourceSlot.targetFrame,
-                    targetResolution: sourceSlot.targetResolution
-                )
-            }
-        } else {
-            // Fallback: use current display positions but try to match by resolution
-            // Pair displays with source slots that have the same target resolution
-            slots = sortedDisplays.enumerated().map { index, display in
-                let matchingSlot = sortedSourceSlots.first { $0.targetResolution == display.resolution }
-                return MonitorSlotProfile(
-                    modelName: display.normalizedModelName,
-                    slotIndex: index,
-                    targetFrame: matchingSlot?.targetFrame ?? display.frame,
-                    targetResolution: matchingSlot?.targetResolution ?? display.resolution
-                )
-            }
+        let slots: [MonitorSlotProfile] = zip(sortedSourceSlots, sortedDisplays).map { sourceSlot, display in
+            MonitorSlotProfile(
+                modelName: display.normalizedModelName,
+                slotIndex: sourceSlot.slotIndex,
+                targetFrame: sourceSlot.targetFrame,
+                targetResolution: sourceSlot.targetResolution
+            )
         }
 
         // Save the new profile
@@ -387,37 +379,33 @@ public final class DisplayConfigurationCoordinator {
         }
     }
 
-    /// Migrates existing profiles to add resolution signatures if they don't have them.
-    /// Ensures backward compatibility with older config files.
+    /// Migrates existing profiles to use canonical resolution signature ordering.
+    /// Handles both nil (pre-resolution-signature profiles) and stale values
+    /// (profiles written with the old area-descending ordering).
     public func migrateProfilesIfNeeded() {
         do {
             var profiles = try profileStore.loadProfiles()
             var needsSave = false
             
             for i in 0..<profiles.count {
-                if profiles[i].resolutionSignatureRawValue == nil {
-                    // We can't compute the resolution signature without the original displays,
-                    // but we can set it based on the slots' resolutions
-                    let resolutionCounts = Dictionary(grouping: profiles[i].slots, by: { $0.targetResolution })
-                        .mapValues { $0.count }
-                    let sortedResolutions = resolutionCounts.keys.sorted { lhs, rhs in
-                        let lhsArea = lhs.width * lhs.height
-                        let rhsArea = rhs.width * rhs.height
-                        if lhsArea != rhsArea { return lhsArea > rhsArea }
-                        if lhs.width != rhs.width { return lhs.width > rhs.width }
-                        return lhs.height > rhs.height
-                    }
-                    let signature = ResolutionSetSignature(rawValue: sortedResolutions.map { 
-                        "\($0.width)x\($0.height)x\(resolutionCounts[$0] ?? 0)" 
-                    }.joined(separator: "|"))
-                    profiles[i].resolutionSignatureRawValue = signature.rawValue
+                // Recompute from slots using canonical ordering (DisplaySize.Comparable:
+                // width ascending, then height ascending). This produces the same result
+                // as ResolutionSetSignature.from() but works from persisted slot data.
+                let resolutionCounts = Dictionary(grouping: profiles[i].slots, by: { $0.targetResolution })
+                    .mapValues { $0.count }
+                let canonical = resolutionCounts.keys.sorted().map {
+                    "\($0.width)x\($0.height)x\(resolutionCounts[$0] ?? 0)"
+                }.joined(separator: "|")
+
+                if profiles[i].resolutionSignatureRawValue != canonical {
+                    profiles[i].resolutionSignatureRawValue = canonical
                     needsSave = true
                 }
             }
             
             if needsSave {
                 try profileStore.saveProfiles(profiles)
-                logger.info("Migrated profiles to add resolution signatures")
+                logger.info("Migrated profiles to canonical resolution signature ordering")
             }
         } catch {
             logger.error("Failed to migrate profiles: \(error)")

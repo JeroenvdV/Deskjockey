@@ -14,13 +14,21 @@ public struct DisplayPoint: Codable, Hashable, Sendable {
     }
 }
 
-public struct DisplaySize: Codable, Hashable, Sendable {
+public struct DisplaySize: Codable, Hashable, Sendable, Comparable {
     public var width: Int
     public var height: Int
 
     public init(width: Int, height: Int) {
         self.width = width
         self.height = height
+    }
+
+    /// Alphabetical ordering by resolution string ("WIDTHxHEIGHT").
+    /// This is the canonical ordering for resolution-based pairing across profiles.
+    /// Position is output of the application and must never be used as input for ordering.
+    public static func < (lhs: DisplaySize, rhs: DisplaySize) -> Bool {
+        if lhs.width != rhs.width { return lhs.width < rhs.width }
+        return lhs.height < rhs.height
     }
 }
 
@@ -149,14 +157,7 @@ public struct ResolutionSetSignature: Codable, Hashable, Sendable {
 
     public static func from(displays: [DisplaySnapshot]) -> ResolutionSetSignature {
         let counts = Dictionary(grouping: displays, by: { $0.resolution }).mapValues { $0.count }
-        let normalized = counts.keys.sorted { lhs, rhs in
-            // Sort by area (width * height) descending, then by width descending
-            let lhsArea = lhs.width * lhs.height
-            let rhsArea = rhs.width * rhs.height
-            if lhsArea != rhsArea { return lhsArea > rhsArea }
-            if lhs.width != rhs.width { return lhs.width > rhs.width }
-            return lhs.height > rhs.height
-        }.map { resolution in
+        let normalized = counts.keys.sorted().map { resolution in
             "\(resolution.width)x\(resolution.height)x\(counts[resolution] ?? 0)"
         }
         return .init(rawValue: normalized.joined(separator: "|"))
