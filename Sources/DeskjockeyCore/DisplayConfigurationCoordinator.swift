@@ -157,17 +157,18 @@ public final class DisplayConfigurationCoordinator {
                 return $0.slotIndex < $1.slotIndex
             }
 
-        let newProfile = MonitorSetProfile(
-            signature: signature,
-            slots: slots,
-            updatedAt: now(),
-            lastUsedAt: nil,
-            resolutionSignature: resolutionSignature
-        )
-
         do {
             var profiles = try profileStore.loadProfiles()
+            let existingLastUsedAt = profiles.first(where: { $0.signature == signature })?.lastUsedAt
             profiles.removeAll { $0.signature == signature }
+
+            let newProfile = MonitorSetProfile(
+                signature: signature,
+                slots: slots,
+                updatedAt: now(),
+                lastUsedAt: existingLastUsedAt,
+                resolutionSignature: resolutionSignature
+            )
             profiles.append(newProfile)
             try profileStore.saveProfiles(profiles)
             var msg = "Profile saved (\(slots.count) display(s), signature: \(signature.rawValue))"
@@ -320,18 +321,19 @@ public final class DisplayConfigurationCoordinator {
             }
         }
 
-        let newProfile = MonitorSetProfile(
-            signature: currentSignature,
-            slots: slots,
-            updatedAt: now(),
-            lastUsedAt: nil,
-            resolutionSignature: currentResolutionSignature
-        )
-
         // Save the new profile
         do {
             var profiles = try profileStore.loadProfiles()
+            let existingLastUsedAt = profiles.first(where: { $0.signature == currentSignature })?.lastUsedAt
             profiles.removeAll { $0.signature == currentSignature }
+
+            let newProfile = MonitorSetProfile(
+                signature: currentSignature,
+                slots: slots,
+                updatedAt: now(),
+                lastUsedAt: existingLastUsedAt,
+                resolutionSignature: currentResolutionSignature
+            )
             profiles.append(newProfile)
             try profileStore.saveProfiles(profiles)
             logger.info("Copied profile from similar setup with signature: \(sourceProfile.signature.rawValue)")

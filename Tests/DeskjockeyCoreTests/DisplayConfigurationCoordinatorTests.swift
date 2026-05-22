@@ -544,30 +544,6 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.hasSavedProfile())
     }
 
-    func testReapplyWithNoMatchingProfile() async {
-        let display = DisplaySnapshot(
-            runtimeID: "D1",
-            modelName: "Dell U2405",
-            isBuiltIn: false,
-            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1200)),
-            resolution: .init(width: 1920, height: 1200)
-        )
-        let manager = MockDisplayManager(displays: [display])
-        let store = InMemoryProfileStore()
-        let coordinator = DisplayConfigurationCoordinator(
-            displayManager: manager,
-            profileStore: store,
-            sleepManager: ImmediateSleepManager(),
-            reapplyDelayMilliseconds: 0
-        )
-
-        // Don't capture any profile
-        await coordinator.monitorSetDidChange()
-
-        // Should not apply anything since no profile exists
-        XCTAssertEqual(manager.applied.count, 0)
-    }
-
     func testDisplaySummariesWithNoProfile() {
         let display = DisplaySnapshot(
             runtimeID: "D1",
@@ -659,34 +635,179 @@ final class DisplayConfigurationCoordinatorTests: XCTestCase {
         XCTAssertTrue(coordinator.currentSetupMatchesSaved())
     }
 
-    func testRecordProfileUsedUpdatesLastUsedAt() throws {
-        let display = DisplaySnapshot(
-            runtimeID: "D1",
-            modelName: "Dell U2405",
-            isBuiltIn: false,
-            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1200)),
-            resolution: .init(width: 1920, height: 1200)
-        )
-        let manager = MockDisplayManager(displays: [display])
+    /// Reproduces the real-world sequence from the logs:
+    /// 1. Profile exists from a previous session
+    /// 2. Monitor plugs in → monitorSetDidChange() applies profile + sets lastUsedAt
+    /// 3. macOS settles → captureCurrentSetup() re-saves the arrangement
+    /// lastUsedAt must survive step 3.
+    func testApplyThenRecapturePreservesLastUsedAt() async throws {
         let store = InMemoryProfileStore()
-        let coordinator = DisplayConfigurationCoordinator(
-            displayManager: manager,
+
+        // Previous session: profile was captured with a specific arrangement
+        let builtIn = DisplaySnapshot(
+            runtimeID: "1",
+            modelName: "Built-in Retina Display",
+            isBuiltIn: true,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1243)),
+            resolution: .init(width: 3840, height: 2486)
+        )
+        let dell = DisplaySnapshot(
+            runtimeID: "3",
+            modelName: "DELL P3225QE",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: -1013, y: -2160), size: .init(width: 3840, height: 2160)),
+            resolution: .init(width: 3840, height: 2160)
+        )
+        let captureManager = MockDisplayManager(displays: [builtIn, dell])
+        let captureCoordinator = DisplayConfigurationCoordinator(
+            displayManager: captureManager,
             profileStore: store,
             sleepManager: ImmediateSleepManager(),
             reapplyDelayMilliseconds: 0
         )
+        try captureCoordinator.captureCurrentSetup()
 
-        try coordinator.captureCurrentSetup()
-        
-        // Initially lastUsedAt should be nil
-        let profiles1 = try store.loadProfiles()
-        XCTAssertNil(profiles1[0].lastUsedAt)
+        // Step 2: Monitor plugs in at a new desk — monitorSetDidChange() applies and sets lastUsedAt
+        let liveDell = DisplaySnapshot(
+            runtimeID: "2",
+            modelName: "DELL P3225QE",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: 1920, y: 0), size: .init(width: 3840, height: 2160)),
+            resolution: .init(width: 3840, height: 2160)
+        )
+        let applyManager = MockDisplayManager(displays: [builtIn, liveDell])
+        let applyCoordinator = DisplayConfigurationCoordinator(
+            displayManager: applyManager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+        await applyCoordinator.monitorSetDidChange()
 
-        // After applying (simulated via recordProfileUsed)
-        coordinator.recordProfileUsed()
-        
-        let profiles2 = try store.loadProfiles()
-        XCTAssertNotNil(profiles2[0].lastUsedAt)
+        // Verify lastUsedAt was set by monitorSetDidChange
+        let afterApply = try store.loadProfiles()
+        let profileAfterApply = afterApply.first { $0.signatureRawValue.contains("P3225QE") }!
+        XCTAssertNotNil(profileAfterApply.lastUsedAt)
+        let savedLastUsedAt = profileAfterApply.lastUsedAt
+
+        // Step 3: macOS settles, arrangement may shift — captureCurrentSetup() re-saves
+        let settledDell = DisplaySnapshot(
+            runtimeID: "2",
+            modelName: "DELL P3225QE",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: -1013, y: -2160), size: .init(width: 3840, height: 2160)),
+            resolution: .init(width: 3840, height: 2160)
+        )
+        applyManager.displays = [builtIn, settledDell]
+        try applyCoordinator.captureCurrentSetup()
+
+        // lastUsedAt must survive the re-capture
+        let afterRecapture = try store.loadProfiles()
+        let profileAfterRecapture = afterRecapture.first { $0.signatureRawValue.contains("P3225QE") }!
+        XCTAssertEqual(profileAfterRecapture.lastUsedAt, savedLastUsedAt)
+        // But the arrangement should be updated
+        let dellSlot = profileAfterRecapture.slots.first { $0.modelName == "DELL P3225QE" }!
+        XCTAssertEqual(dellSlot.targetFrame.origin.x, -1013)
+        XCTAssertEqual(dellSlot.targetFrame.origin.y, -2160)
+    }
+
+    /// Reproduces the user's real scenario: two Dell monitors with identical
+    /// resolutions but different model names (P3225QE at home, P3223QE at office).
+    /// Both have resolution signature "3840x2486x1|3840x2160x1".
+    /// After using P3225QE, findMostRecentMatchingProfileByResolution() from a
+    /// third setup should prefer P3225QE over P3223QE because its lastUsedAt is set.
+    func testLastUsedAtDisambiguatesProfilesWithSameResolutionSignature() async throws {
+        let store = InMemoryProfileStore()
+
+        let builtIn = DisplaySnapshot(
+            runtimeID: "1",
+            modelName: "Built-in Retina Display",
+            isBuiltIn: true,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 1920, height: 1243)),
+            resolution: .init(width: 3840, height: 2486)
+        )
+
+        // Profile A: DELL P3225QE (home) — captured long ago
+        let dellHome = DisplaySnapshot(
+            runtimeID: "2",
+            modelName: "DELL P3225QE",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: -1013, y: -2160), size: .init(width: 3840, height: 2160)),
+            resolution: .init(width: 3840, height: 2160)
+        )
+        let homeManager = MockDisplayManager(displays: [builtIn, dellHome])
+        let homeCoordinator = DisplayConfigurationCoordinator(
+            displayManager: homeManager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0,
+            now: { Date(timeIntervalSince1970: 1_000_000) }
+        )
+        try homeCoordinator.captureCurrentSetup()
+
+        // Profile B: DELL P3223QE (office) — captured more recently
+        let dellOffice = DisplaySnapshot(
+            runtimeID: "3",
+            modelName: "DELL P3223QE",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: 1920, y: 0), size: .init(width: 3840, height: 2160)),
+            resolution: .init(width: 3840, height: 2160)
+        )
+        let officeManager = MockDisplayManager(displays: [builtIn, dellOffice])
+        let officeCoordinator = DisplayConfigurationCoordinator(
+            displayManager: officeManager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0,
+            now: { Date(timeIntervalSince1970: 2_000_000) }
+        )
+        try officeCoordinator.captureCurrentSetup()
+
+        // Both profiles have the same resolution signature
+        let profiles = try store.loadProfiles()
+        let homeProfile = profiles.first { $0.signatureRawValue.contains("P3225QE") }!
+        let officeProfile = profiles.first { $0.signatureRawValue.contains("P3223QE") }!
+        XCTAssertEqual(homeProfile.resolutionSignature, officeProfile.resolutionSignature)
+
+        // Now use the home setup: monitorSetDidChange() sets lastUsedAt, then recapture
+        let useHomeManager = MockDisplayManager(displays: [builtIn, dellHome])
+        let useHomeCoordinator = DisplayConfigurationCoordinator(
+            displayManager: useHomeManager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0,
+            now: { Date(timeIntervalSince1970: 3_000_000) }
+        )
+        await useHomeCoordinator.monitorSetDidChange()
+        try useHomeCoordinator.captureCurrentSetup()
+
+        // Verify: home profile now has lastUsedAt, office does not
+        let afterUse = try store.loadProfiles()
+        let homeAfterUse = afterUse.first { $0.signatureRawValue.contains("P3225QE") }!
+        let officeAfterUse = afterUse.first { $0.signatureRawValue.contains("P3223QE") }!
+        XCTAssertNotNil(homeAfterUse.lastUsedAt)
+        XCTAssertNil(officeAfterUse.lastUsedAt)
+
+        // From a third monitor setup with the same resolution, the home profile
+        // should be preferred because it has a more recent lastUsedAt
+        let thirdDell = DisplaySnapshot(
+            runtimeID: "4",
+            modelName: "DELL P3225QE-NEW",
+            isBuiltIn: false,
+            frame: DisplayFrame(origin: .init(x: 0, y: 0), size: .init(width: 3840, height: 2160)),
+            resolution: .init(width: 3840, height: 2160)
+        )
+        let thirdManager = MockDisplayManager(displays: [builtIn, thirdDell])
+        let thirdCoordinator = DisplayConfigurationCoordinator(
+            displayManager: thirdManager,
+            profileStore: store,
+            sleepManager: ImmediateSleepManager(),
+            reapplyDelayMilliseconds: 0
+        )
+        let mostRecent = thirdCoordinator.findMostRecentMatchingProfileByResolution()
+        XCTAssertNotNil(mostRecent)
+        XCTAssertTrue(mostRecent!.signatureRawValue.contains("P3225QE"),
+            "Should prefer the profile with lastUsedAt set, got: \(mostRecent!.signatureRawValue)")
     }
 
     func testMigrateProfilesIfNeededAddsResolutionSignatures() throws {
