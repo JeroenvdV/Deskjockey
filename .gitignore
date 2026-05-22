@@ -4,3 +4,4 @@ DerivedData/
 *.xcodeproj
 xcuserdata/
 *.xcuserstate
+.vscode/settings.json
