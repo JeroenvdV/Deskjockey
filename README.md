@@ -38,6 +38,7 @@ swapping a USB-C side or using a different dock just works.
 - **Single instance** -- launching a second copy signals the running instance to show its menu, then exits.
 - **Menu bar native** -- lives in your menu bar with a single icon. No windows, no Dock clutter.
 - **Launch at Login** -- set it and forget it.
+- **Keeps the arrangement when you change resolution** -- macOS moves a display when you pick another resolution. Deskjockey moves it back next to the same neighbor, and remembers the arrangement for each resolution you use.
 - **Copy Similar Setup** -- when you connect to a new setup with the same native resolutions as a previously saved setup, you can copy that configuration. The most recently used matching setup is offered. Only available when a matching setup exists.
 - **Open Config File** -- open the JSON configuration file directly from the menu bar to edit it manually.
 

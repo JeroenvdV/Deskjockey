@@ -80,20 +80,27 @@ final class MacDisplayManager: DisplayManaging {
 
         // Resolve the target display mode before starting the CG transaction
         // so we can apply origin + mode atomically in a single commit.
-        let targetWidth = configuration.targetResolution.width
-        let targetHeight = configuration.targetResolution.height
+        // If no mode matches, the origin is still applied and the error is thrown after.
         var matchingMode: CGDisplayMode?
-
-        if let allModes = CGDisplayCopyAllDisplayModes(displayID, nil) as? [CGDisplayMode] {
-            matchingMode = allModes.first(where: {
-                Int($0.pixelWidth) == targetWidth && Int($0.pixelHeight) == targetHeight
-            })
+        var modeError: DisplayError?
+        if let current = CGDisplayCopyDisplayMode(displayID), Self.mode(current, matches: configuration) {
+            matchingMode = nil
+        } else {
+            let allModes = Self.allModes(of: displayID)
+            let candidates = allModes.filter { Self.mode($0, matches: configuration) }
+            let usable = candidates.filter { $0.isUsableForDesktopGUI() }
+            matchingMode = (usable.isEmpty ? candidates : usable).max { $0.refreshRate < $1.refreshRate }
             if matchingMode == nil {
-                let available = Set(allModes.map { "\(Int($0.pixelWidth))x\(Int($0.pixelHeight))" })
+                let available = Set(allModes.map {
+                    "\($0.width)x\($0.height)@\($0.pixelWidth)x\($0.pixelHeight)"
+                })
                     .sorted()
                     .joined(separator: ", ")
                 NSLog("[Deskjockey] Available modes for display \(displayID): \(available)")
-                throw DisplayError.modeNotAvailable(width: targetWidth, height: targetHeight)
+                modeError = DisplayError.modeNotAvailable(
+                    width: configuration.targetResolution.width,
+                    height: configuration.targetResolution.height
+                )
             }
         }
 
@@ -125,6 +132,43 @@ final class MacDisplayManager: DisplayManaging {
                 "Failed to commit configuration for display \(displayID)"
             )
         }
+        if let modeError {
+            throw modeError
+        }
+    }
+
+    func moveDisplays(to origins: [String: DisplayPoint]) throws {
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success, let config else {
+            throw DisplayError.configurationFailed("Could not begin display configuration")
+        }
+        for (runtimeID, origin) in origins {
+            guard let displayID = UInt32(runtimeID),
+                  CGConfigureDisplayOrigin(config, displayID, Int32(origin.x), Int32(origin.y)) == .success
+            else {
+                CGCancelDisplayConfiguration(config)
+                throw DisplayError.configurationFailed("Failed to set origin for display \(runtimeID)")
+            }
+        }
+        if CGCompleteDisplayConfiguration(config, .permanently) != .success {
+            throw DisplayError.configurationFailed("Failed to commit display origins")
+        }
+    }
+
+    /// Returns all modes of a display, including scaled HiDPI modes.
+    /// Without the option, macOS hides the HiDPI modes that System Settings offers as "Larger Text" / "More Space".
+    private static func allModes(of displayID: CGDirectDisplayID) -> [CGDisplayMode] {
+        let options = [kCGDisplayShowDuplicateLowResolutionModes: kCFBooleanTrue] as CFDictionary
+        return CGDisplayCopyAllDisplayModes(displayID, options) as? [CGDisplayMode] ?? []
+    }
+
+    /// Returns true if the mode has the target size in both points and pixels.
+    /// Pixels alone are ambiguous: 1920x1080 HiDPI and 3840x2160 both use 3840x2160 pixels.
+    private static func mode(_ mode: CGDisplayMode, matches configuration: DisplayConfiguration) -> Bool {
+        mode.width == configuration.targetFrame.size.width
+            && mode.height == configuration.targetFrame.size.height
+            && mode.pixelWidth == configuration.targetResolution.width
+            && mode.pixelHeight == configuration.targetResolution.height
     }
 
     private func snapshotForScreen(

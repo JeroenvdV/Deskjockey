@@ -278,11 +278,12 @@ final class AppDelegate: NSObject {
 
         if let lastTopologyFingerprint, lastTopologyFingerprint == topology {
             // Same monitors, but macOS changed something (e.g. user rearranged
-            // in System Settings). Update the saved profile to match.
+            // or changed a resolution in System Settings). Keep the arrangement
+            // after a resolution change, then update the saved profile to match.
             if !isApplyingProfile {
                 logger.info("Configuration updated by OS")
                 do {
-                    try coordinator.captureCurrentSetup()
+                    try coordinator.configurationDidChange()
                     recordProcessed()
                 } catch {
                     logger.error("Failed to capture setup: \(error)")

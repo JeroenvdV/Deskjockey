@@ -251,6 +251,8 @@ extension Array where Element == SlotAssignment {
 /// - **Arrangement** (slots): the target position and resolution for each slot
 /// - **Assignments** (knownAssignments): which physical monitors (by serial/port)
 ///   have been seen in which slots
+/// - **Saved layouts** (savedLayouts): past arrangements, one per combination of
+///   display sizes, so switching back to a resolution restores its arrangement
 public struct MonitorSetProfile: Hashable, Sendable {
     public var signatureRawValue: String
     public var slots: [MonitorSlotProfile]
@@ -258,6 +260,7 @@ public struct MonitorSetProfile: Hashable, Sendable {
     public var updatedAt: Date
     public var lastUsedAt: Date?
     public var resolutionSignatureRawValue: String?
+    public var savedLayouts: [[MonitorSlotProfile]]
 
     public init(
         signature: MonitorSetSignature,
@@ -265,7 +268,8 @@ public struct MonitorSetProfile: Hashable, Sendable {
         knownAssignments: [SlotAssignment] = [],
         updatedAt: Date = Date(),
         lastUsedAt: Date? = nil,
-        resolutionSignature: ResolutionSetSignature? = nil
+        resolutionSignature: ResolutionSetSignature? = nil,
+        savedLayouts: [[MonitorSlotProfile]] = []
     ) {
         self.signatureRawValue = signature.rawValue
         self.slots = slots
@@ -273,6 +277,7 @@ public struct MonitorSetProfile: Hashable, Sendable {
         self.updatedAt = updatedAt
         self.lastUsedAt = lastUsedAt
         self.resolutionSignatureRawValue = resolutionSignature?.rawValue
+        self.savedLayouts = savedLayouts
     }
 
     public var signature: MonitorSetSignature {
@@ -283,14 +288,56 @@ public struct MonitorSetProfile: Hashable, Sendable {
         guard let rawValue = resolutionSignatureRawValue else { return nil }
         return ResolutionSetSignature(rawValue: rawValue)
     }
+
+    /// Returns the saved layout whose display sizes match the live displays, if any.
+    public func savedLayout(
+        matching pairs: [(display: DisplaySnapshot, slot: MonitorSlotProfile)]
+    ) -> [MonitorSlotProfile]? {
+        let liveKey = Set(pairs.map {
+            Self.sizeKey(
+                modelName: $0.slot.modelName,
+                slotIndex: $0.slot.slotIndex,
+                frameSize: $0.display.frame.size,
+                resolution: $0.display.resolution
+            )
+        })
+        return savedLayouts.first { Self.sizeKey(of: $0) == liveKey }
+    }
+
+    /// Stores a layout, replacing any saved layout with the same display sizes.
+    public mutating func rememberLayout(_ layout: [MonitorSlotProfile]) {
+        let key = Self.sizeKey(of: layout)
+        savedLayouts.removeAll { Self.sizeKey(of: $0) == key }
+        savedLayouts.append(layout)
+    }
+
+    private static func sizeKey(of layout: [MonitorSlotProfile]) -> Set<String> {
+        Set(layout.map {
+            sizeKey(
+                modelName: $0.modelName,
+                slotIndex: $0.slotIndex,
+                frameSize: $0.targetFrame.size,
+                resolution: $0.targetResolution
+            )
+        })
+    }
+
+    private static func sizeKey(
+        modelName: String,
+        slotIndex: Int,
+        frameSize: DisplaySize,
+        resolution: DisplaySize
+    ) -> String {
+        "\(modelName)#\(slotIndex):\(frameSize.width)x\(frameSize.height)@\(resolution.width)x\(resolution.height)"
+    }
 }
 
 // Custom Codable for backward compatibility: old profiles on disk
-// don't have knownAssignments, so we decode it with a fallback to [].
+// don't have knownAssignments or savedLayouts, so we decode them with a fallback to [].
 extension MonitorSetProfile: Codable {
     enum CodingKeys: String, CodingKey {
         case signatureRawValue, slots, knownAssignments, updatedAt
-        case lastUsedAt, resolutionSignatureRawValue
+        case lastUsedAt, resolutionSignatureRawValue, savedLayouts
     }
 
     public init(from decoder: Decoder) throws {
@@ -301,6 +348,7 @@ extension MonitorSetProfile: Codable {
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)
         lastUsedAt = try container.decodeIfPresent(Date.self, forKey: .lastUsedAt)
         resolutionSignatureRawValue = try container.decodeIfPresent(String.self, forKey: .resolutionSignatureRawValue)
+        savedLayouts = try container.decodeIfPresent([[MonitorSlotProfile]].self, forKey: .savedLayouts) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -311,6 +359,7 @@ extension MonitorSetProfile: Codable {
         try container.encode(updatedAt, forKey: .updatedAt)
         try container.encodeIfPresent(lastUsedAt, forKey: .lastUsedAt)
         try container.encodeIfPresent(resolutionSignatureRawValue, forKey: .resolutionSignatureRawValue)
+        try container.encode(savedLayouts, forKey: .savedLayouts)
     }
 }
 
