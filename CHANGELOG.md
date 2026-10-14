@@ -4,6 +4,11 @@ All notable changes to Deskjockey are documented in this file.
 
 ## Unreleased
 
+### Bug fixes
+
+- **Fixed restoring scaled resolutions.** Restores failed with "No matching display mode" for HiDPI modes (e.g. "looks like 3008x1692" on a 6K monitor), and the position was dropped with it. Deskjockey now lists HiDPI modes and matches on both points and pixels. If no mode matches, it still restores the position.
+- **Changing a resolution keeps the arrangement.** macOS moves a display when its resolution changes, and Deskjockey used to save that new spot. It now moves the display back next to the same neighbor. It also remembers the arrangement for each combination of resolutions, so switching back restores it exactly.
+
 ## 1.2.0 - 2026-05-22
 
 ### Bug fixes

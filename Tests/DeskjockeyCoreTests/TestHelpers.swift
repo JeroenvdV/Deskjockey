@@ -4,6 +4,7 @@ import Foundation
 final class MockDisplayManager: DisplayManaging {
     var displays: [DisplaySnapshot]
     var applied: [DisplayConfiguration] = []
+    var moved: [[String: DisplayPoint]] = []
 
     init(displays: [DisplaySnapshot]) {
         self.displays = displays
@@ -15,6 +16,15 @@ final class MockDisplayManager: DisplayManaging {
 
     func apply(configuration: DisplayConfiguration, to display: DisplaySnapshot) throws {
         applied.append(configuration)
+    }
+
+    func moveDisplays(to origins: [String: DisplayPoint]) throws {
+        moved.append(origins)
+        for (runtimeID, origin) in origins {
+            if let index = displays.firstIndex(where: { $0.runtimeID == runtimeID }) {
+                displays[index].frame.origin = origin
+            }
+        }
     }
 }
 

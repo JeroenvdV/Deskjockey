@@ -9,6 +9,8 @@ import Foundation
 public protocol DisplayManaging {
     func currentDisplays() -> [DisplaySnapshot]
     func apply(configuration: DisplayConfiguration, to display: DisplaySnapshot) throws
+    /// Moves displays to new origins in one step, without changing their resolution.
+    func moveDisplays(to origins: [String: DisplayPoint]) throws
 }
 
 public protocol Logger {

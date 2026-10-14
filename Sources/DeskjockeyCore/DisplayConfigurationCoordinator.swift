@@ -111,7 +111,10 @@ public final class DisplayConfigurationCoordinator {
                 logger.info("Configuring \(displayLabel): origin \(targetOrigin) (resolution managed by macOS)")
                 let config = DisplayConfiguration(
                     runtimeID: pair.display.runtimeID,
-                    targetFrame: pair.slot.targetFrame,
+                    targetFrame: DisplayFrame(
+                        origin: pair.slot.targetFrame.origin,
+                        size: pair.display.frame.size
+                    ),
                     targetResolution: pair.display.resolution
                 )
                 do {
@@ -135,6 +138,61 @@ public final class DisplayConfigurationCoordinator {
                     logger.error("Failed to configure \(displayLabel): \(error)")
                 }
             }
+        }
+    }
+
+    /// Called when macOS changes the arrangement of the same set of monitors.
+    ///
+    /// If a display changed size (the user picked another resolution), macOS has
+    /// moved it to a spot of its own choosing. This moves the displays back into
+    /// the saved arrangement first. Then it saves the current arrangement.
+    public func configurationDidChange() throws {
+        let displays = displayManager.currentDisplays()
+        guard !displays.isEmpty else {
+            throw ProfileError.noDisplaysConnected
+        }
+
+        let signature = MonitorSetSignature.from(displays: displays)
+        if let profile = try? profileStore.loadProfiles().first(where: { $0.signature == signature }) {
+            restoreArrangementAfterResize(displays: displays, profile: profile)
+        }
+        try captureCurrentSetup()
+    }
+
+    private func restoreArrangementAfterResize(displays: [DisplaySnapshot], profile: MonitorSetProfile) {
+        let pairs = SlotResolver.pair(
+            liveDisplays: displays,
+            profileSlots: profile.slots,
+            knownAssignments: profile.knownAssignments
+        ).pairs
+        let resized = pairs.filter {
+            $0.display.frame.size != $0.slot.targetFrame.size || $0.display.resolution != $0.slot.targetResolution
+        }
+        guard !resized.isEmpty else { return }
+
+        let savedLayout = profile.savedLayout(matching: pairs)
+        let targets = ResizeLayout.targetOrigins(pairs: pairs, savedLayout: savedLayout)
+        let moves = targets.filter { runtimeID, origin in
+            displays.first { $0.runtimeID == runtimeID }?.frame.origin != origin
+        }
+
+        var msg = "Display size changed, "
+        msg += savedLayout == nil ? "keeping arrangement" : "restoring saved arrangement for these sizes"
+        for pair in resized {
+            let size = pair.display.frame.size
+            msg += "\n  \(Self.label(for: pair.display))  now \(size.width)x\(size.height) points"
+        }
+        for pair in pairs {
+            guard let origin = moves[pair.display.runtimeID] else { continue }
+            msg += "\n  moving \(Self.label(for: pair.display)) to (\(origin.x), \(origin.y))"
+        }
+        logger.info(msg)
+        guard !moves.isEmpty else { return }
+
+        do {
+            try displayManager.moveDisplays(to: moves)
+        } catch {
+            logger.error("Failed to move displays: \(error)")
         }
     }
 
@@ -179,14 +237,19 @@ public final class DisplayConfigurationCoordinator {
             assignments.upsert(resolution.assignment)
             profiles.removeAll { $0.signature == signature }
 
-            let newProfile = MonitorSetProfile(
+            var newProfile = MonitorSetProfile(
                 signature: signature,
                 slots: slots,
                 knownAssignments: assignments,
                 updatedAt: now(),
                 lastUsedAt: existingLastUsedAt,
-                resolutionSignature: resolutionSignature
+                resolutionSignature: resolutionSignature,
+                savedLayouts: existingProfile?.savedLayouts ?? []
             )
+            if let existingProfile {
+                newProfile.rememberLayout(existingProfile.slots)
+            }
+            newProfile.rememberLayout(slots)
             profiles.append(newProfile)
             try profileStore.saveProfiles(profiles)
             var msg = "Profile saved (\(slots.count) display(s), signature: \(signature.rawValue))"
