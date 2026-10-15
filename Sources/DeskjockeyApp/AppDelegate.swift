@@ -1,37 +1,19 @@
 import AppKit
+import CoreGraphics
 import DeskjockeyCore
 
-/// Owns the menu bar UI and orchestrates display change handling.
-///
-/// Uses two layers of event coalescing:
-/// 1. Debouncer (0.8s) -- batches rapid CGDisplayReconfigurationCallback bursts
-/// 2. Coordinator delay (1s) -- waits for macOS to finalize display state
-///
-/// Tracks topology fingerprints to distinguish real hardware changes from
-/// macOS firing extra reconfig events for the same set of displays.
+/// Presents coordinator state and forwards display events and user commands.
+/// The coordinator owns detection, capture, and configuration transactions.
 @MainActor
 final class AppDelegate: NSObject {
-    private let displayManager = MacDisplayManager()
+    private lazy var displayManager = MacDisplayManager(logger: logger)
     private let sleepManager = TaskSleepManager()
     private let logger: Logger = FileLogger()
     private let loginItemManager = LoginItemManager()
 
-    private var coordinator: DisplayConfigurationCoordinator?
+    private var coordinator: ScreenConfigurationCoordinator?
     private var displayObserver: DisplayChangeObserver?
     private var debouncer = Debouncer(delay: 0.8)
-
-    /// Guards against re-capturing a profile while we're in the middle of applying one.
-    /// Without this, the intermediate (partially applied) state would overwrite the
-    /// saved profile.
-    private var isApplyingProfile = false
-
-    /// Used to detect whether a display change is a real topology change (monitors
-    /// added/removed) vs. macOS just adjusting the existing arrangement.
-    private var lastTopologyFingerprint: DisplayTopologyFingerprint?
-
-    /// Active apply task -- tracked so we can cancel it if a new topology
-    /// change arrives before the previous apply completes.
-    private var activeApplyTask: Task<Void, Never>?
 
     private var statusItem: NSStatusItem?
     private var launchAtLoginMenuItem: NSMenuItem?
@@ -41,56 +23,30 @@ final class AppDelegate: NSObject {
     private static let lastProcessedKey = "lastProcessedAt"
 
     func start() {
-        let store = JSONProfileStore(fileURL: profileFileURL())
-        coordinator = DisplayConfigurationCoordinator(
+        let store = JSONDisplaySetStore(fileURL: displaySetDatabaseURL())
+        coordinator = ScreenConfigurationCoordinator(
             displayManager: displayManager,
-            profileStore: store,
+            displaySetStore: store,
             logger: logger,
             sleepManager: sleepManager,
             reapplyDelayMilliseconds: 1_000
         )
 
-        // Migrate existing profiles to add resolution signatures if needed
-        coordinator?.migrateProfilesIfNeeded()
-
         lastProcessedAt = UserDefaults.standard.object(forKey: Self.lastProcessedKey) as? Date
         configureStatusItem()
         refreshMenu()
 
-        let currentDisplays = displayManager.currentDisplays()
-        guard !currentDisplays.isEmpty else {
-            logger.info("No displays at launch")
-            return
-        }
-
-        lastTopologyFingerprint = DisplayTopologyFingerprint.from(displays: currentDisplays)
-
-        // On launch: apply saved profile if one exists for this monitor set,
-        // otherwise capture the current arrangement as a new profile.
-        if coordinator?.hasSavedProfile() == true {
-            logger.info("Saved profile found at launch, applying")
-            isApplyingProfile = true
-            activeApplyTask = Task {
-                await coordinator?.monitorSetDidChange()
-                isApplyingProfile = false
-                lastTopologyFingerprint = DisplayTopologyFingerprint.from(
-                    displays: displayManager.currentDisplays()
-                )
-                refreshMenu()
+        displayObserver = DisplayChangeObserver { [weak self] displayID, flags in
+            self?.logger.info("event=display_callback runtime_id=\(displayID) flags=\(flags)")
+            let changes = CGDisplayChangeSummaryFlags(rawValue: flags)
+            let connectionFired = !changes.intersection([.addFlag, .removeFlag, .enabledFlag, .disabledFlag]).isEmpty
+            self?.logger.debug("event=display_change_flags runtime_id=\(displayID) change_flags=\(changes.rawValue) connection_fired=\(connectionFired)")
+            if connectionFired {
+                self?.coordinator?.displayConnectionDidChange()
             }
-        } else {
-            logger.info("No saved profile at launch, capturing current setup")
-            do {
-                try coordinator?.captureCurrentSetup()
-                refreshMenu()
-            } catch {
-                logger.error("Failed to capture initial setup: \(error)")
-            }
-        }
-
-        displayObserver = DisplayChangeObserver { [weak self] in
             self?.handleDisplayChange()
         }
+        processDisplayChange()
     }
 
     // MARK: - Menu
@@ -108,6 +64,7 @@ final class AppDelegate: NSObject {
         }
 
         item.menu = NSMenu()
+        item.menu?.autoenablesItems = false
         item.menu?.delegate = self
     }
 
@@ -118,14 +75,14 @@ final class AppDelegate: NSObject {
         guard let menu = statusItem?.menu else { return }
         menu.removeAllItems()
 
-        let summaries = coordinator?.displaySummaries() ?? []
-        let allMatch = coordinator?.currentSetupMatchesSaved() ?? false
-        let hasSaved = coordinator?.hasSavedProfile() ?? false
+        let summaries = coordinator?.state.summaries ?? []
+        let allMatch = coordinator?.state.matchesScreenConfiguration ?? false
+        let hasSaved = coordinator?.state.hasSavedScreenConfiguration ?? false
 
-        // Combined profile status + last-processed timestamp
+        // Combined display set class status + last-processed timestamp
         var statusTitle: String
         if !hasSaved {
-            statusTitle = "No Saved Profile"
+            statusTitle = "No Saved Configuration"
         } else if allMatch {
             statusTitle = "In Sync"
         } else {
@@ -156,18 +113,34 @@ final class AppDelegate: NSObject {
                 let prefix: String
                 if !hasSaved {
                     prefix = "  "
-                } else if summary.matchesSaved {
+                } else if summary.matchesScreenConfiguration {
                     prefix = "  "
                 } else {
                     prefix = "  ~ "
                 }
-                let res = "\(summary.resolution.width)x\(summary.resolution.height)"
-                let label = summary.isBuiltIn ? "\(summary.modelName) (built-in)" : summary.modelName
+                let res = "\(summary.pixelSize.width)x\(summary.pixelSize.height)"
+                let label = summary.isBuiltIn ? "\(summary.displayName) (built-in)" : summary.displayName
                 let item = NSMenuItem(title: "\(prefix)\(label)  \(res)", action: nil, keyEquivalent: "")
                 item.isEnabled = false
                 if hasSaved {
-                    item.state = summary.matchesSaved ? .on : .mixed
+                    item.state = summary.matchesScreenConfiguration ? .on : .mixed
                 }
+                menu.addItem(item)
+            }
+        }
+
+        if let candidates = coordinator?.state.swapCandidates, !candidates.isEmpty {
+            menu.addItem(.separator())
+            for candidate in candidates {
+                let item = NSMenuItem(
+                    title: candidates.count == 1 ? "Swap Identical Displays" : candidate.title,
+                    action: #selector(swapDisplayAssignments(_:)),
+                    keyEquivalent: ""
+                )
+                item.target = self
+                item.representedObject = candidate
+                item.isEnabled = hasSaved
+                item.toolTip = "Exchange screen assignments without changing the shared configuration. Click again to undo."
                 menu.addItem(item)
             }
         }
@@ -175,32 +148,23 @@ final class AppDelegate: NSObject {
         // Manual operations submenu
         menu.addItem(.separator())
         let manualMenu = NSMenu()
+        manualMenu.autoenablesItems = false
         let saveItem = NSMenuItem(
-            title: "Save Current Setup",
-            action: #selector(saveCurrentSetup),
+            title: "Save Current Configuration",
+            action: #selector(captureCurrentScreenConfiguration),
             keyEquivalent: "s"
         )
         saveItem.target = self
         manualMenu.addItem(saveItem)
 
         let reapplyItem = NSMenuItem(
-            title: "Re-apply Saved Setup",
-            action: #selector(reapplySavedSetup),
+            title: "Apply Saved Configuration",
+            action: #selector(applySavedScreenConfiguration),
             keyEquivalent: "r"
         )
         reapplyItem.target = self
         reapplyItem.isEnabled = hasSaved
         manualMenu.addItem(reapplyItem)
-
-        let copySimilarItem = NSMenuItem(
-            title: "Copy Similar Setup",
-            action: #selector(copySimilarSetup),
-            keyEquivalent: ""
-        )
-        copySimilarItem.target = self
-        let hasSimilar = coordinator?.hasSimilarSetupByResolution() ?? false
-        copySimilarItem.isEnabled = hasSimilar
-        manualMenu.addItem(copySimilarItem)
 
         let manualItem = NSMenuItem(title: "Manual Operations", action: nil, keyEquivalent: "")
         manualItem.submenu = manualMenu
@@ -238,8 +202,8 @@ final class AppDelegate: NSObject {
         quitItem.target = self
         menu.addItem(quitItem)
 
-        // Orange tint only when a saved profile exists but doesn't match.
-        // No saved profile = neutral (not an error state).
+        // Orange tint only when a saved display set class exists but doesn't match.
+        // No saved display set class = neutral (not an error state).
         updateStatusIcon(inSync: !hasSaved || allMatch)
     }
 
@@ -266,97 +230,48 @@ final class AppDelegate: NSObject {
         }
     }
 
-    /// Core display change logic. Two branches:
-    /// - Topology unchanged: macOS adjusted something (e.g. resolution scaling)
-    ///   but the same monitors are connected. Capture the updated arrangement.
-    /// - Topology changed: monitors were added or removed. Look up and apply
-    ///   the saved profile for the new monitor set.
     private func processDisplayChange() {
+        perform { await $0.processDisplayChange() }
+    }
+
+    /// The coordinator serializes operations and records failures without alerts.
+    private func perform(_ operation: @escaping (ScreenConfigurationCoordinator) async -> Bool) {
         guard let coordinator else { return }
-        let liveDisplays = displayManager.currentDisplays()
-        let topology = DisplayTopologyFingerprint.from(displays: liveDisplays)
-
-        if let lastTopologyFingerprint, lastTopologyFingerprint == topology {
-            // Same monitors, but macOS changed something (e.g. user rearranged
-            // in System Settings). Update the saved profile to match.
-            if !isApplyingProfile {
-                logger.info("Configuration updated by OS")
-                do {
-                    try coordinator.captureCurrentSetup()
-                    recordProcessed()
-                } catch {
-                    logger.error("Failed to capture setup: \(error)")
-                }
-                refreshMenu()
-                flashStatusIcon()
-            }
-            return
-        }
-
-        // Different topology: monitors were plugged/unplugged.
-        // Cancel any in-flight apply before starting a new one.
-        activeApplyTask?.cancel()
-        lastTopologyFingerprint = topology
-        isApplyingProfile = true
-        logger.info("Topology changed, reapplying profile")
-        activeApplyTask = Task {
-            await coordinator.monitorSetDidChange()
-            isApplyingProfile = false
-            lastTopologyFingerprint = DisplayTopologyFingerprint.from(
-                displays: displayManager.currentDisplays()
-            )
-            recordProcessed()
+        Task { [weak self] in
+            let succeeded = await operation(coordinator)
+            guard let self else { return }
+            if succeeded { recordProcessed() }
             refreshMenu()
-            flashStatusIcon()
+            if succeeded { flashStatusIcon() }
         }
     }
 
     // MARK: - Actions
 
     @objc
-    private func saveCurrentSetup() {
-        do {
-            try coordinator?.captureCurrentSetup()
-            refreshMenu()
-            logger.info("User saved current setup")
-        } catch {
-            logger.error("Failed to save setup: \(error)")
+    private func swapDisplayAssignments(_ sender: NSMenuItem) {
+        guard let candidate = sender.representedObject as? DisplaySwapCandidate else { return }
+        perform {
+            await $0.swapDisplayAssignments(
+                firstRuntimeID: candidate.firstRuntimeID,
+                secondRuntimeID: candidate.secondRuntimeID
+            )
         }
     }
 
     @objc
-    private func reapplySavedSetup() {
-        guard let coordinator else { return }
-        activeApplyTask?.cancel()
-        isApplyingProfile = true
-        logger.info("User requested reapply")
-        activeApplyTask = Task {
-            await coordinator.monitorSetDidChange()
-            isApplyingProfile = false
-            refreshMenu()
-        }
+    private func captureCurrentScreenConfiguration() {
+        perform { await $0.captureCurrentScreenConfiguration() }
     }
 
     @objc
-    private func copySimilarSetup() {
-        guard let coordinator else { return }
-        
-        logger.info("User requested copy similar setup")
-        
-        do {
-            if let sourceProfile = coordinator.findMostRecentMatchingProfileByResolution() {
-                try coordinator.copyProfileFromSimilarSetup(sourceProfile: sourceProfile)
-                logger.info("Copied setup from similar profile")
-            }
-            refreshMenu()
-        } catch {
-            logger.error("Failed to copy similar setup: \(error)")
-        }
+    private func applySavedScreenConfiguration() {
+        perform { await $0.applySavedScreenConfiguration() }
     }
 
     @objc
     private func openConfigFile() {
-        let url = profileFileURL()
+        let url = displaySetDatabaseURL()
         logger.info("Opening config file at: \(url.path)")
         NSWorkspace.shared.open(url)
     }
@@ -385,8 +300,8 @@ final class AppDelegate: NSObject {
         guard let button = statusItem?.button else { return }
         button.contentTintColor = .systemGreen
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-            let allMatch = self?.coordinator?.currentSetupMatchesSaved() ?? false
-            let hasSaved = self?.coordinator?.hasSavedProfile() ?? false
+            let allMatch = self?.coordinator?.state.matchesScreenConfiguration ?? false
+            let hasSaved = self?.coordinator?.state.hasSavedScreenConfiguration ?? false
             self?.updateStatusIcon(inSync: !hasSaved || allMatch)
         }
     }
@@ -399,7 +314,7 @@ final class AppDelegate: NSObject {
 
     // MARK: - Helpers
 
-    private func profileFileURL() -> URL {
+    private func displaySetDatabaseURL() -> URL {
         let supportRoot = FileManager.default.urls(
             for: .applicationSupportDirectory,
             in: .userDomainMask

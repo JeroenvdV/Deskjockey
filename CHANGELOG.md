@@ -2,7 +2,22 @@
 
 All notable changes to Deskjockey are documented in this file.
 
-## Unreleased
+## 2.0.0 - 2026-10-15
+
+- Enumerate display modes with the duplicate-low-resolution option so scaled (HiDPI) saved resolutions restore.
+- Standardize domain names across types, commands, files, tests, documentation, and diagnostic fields. Keep version-two storage keys and `profiles.json` compatible.
+- Rename the manual commands to **Save Current Configuration** and **Apply Saved Configuration**.
+- Remove the **Copy Similar Setup** / **Copy Compatible Configuration** command. Swap identical displays covers the same correction without duplicating class configurations.
+- Emit `instance_saved` only after the database save succeeds; use `instance_identified` for identity evidence before persistence.
+- Identify display set classes by vendor/product IDs, independent of display names. Keep physical instances separate through model-and-serial identities.
+- Store one shared screen configuration per class, with explicit main-slot selection and both logical and pixel mode dimensions.
+- Restore exact instance assignments before weaker hints. New instances always receive a complete compatible assignment; absent serials permit session-only assignments.
+- Capture new classes both at launch and after connection. System Settings edits update the class; pure permutations update only the instance.
+- Apply complete configurations in one validated CoreGraphics transaction. Verify the result before recording a successful restore.
+- Added **Swap Identical Displays** for compatible identical-model pairs, including different target modes and displays without usable serials.
+- Preserve version-one profiles and an exact backup during conversion to version-two storage. Reject corrupt data, unsupported schemas, and detected external edits without overwriting them.
+- Add correlated diagnostic records with input identities, reason codes, assignment decisions, and outcomes. Display failures no longer produce error dialogs.
+- Serialize display operations and invalidate session-only assignments on connection events, including reused runtime IDs.
 
 ## 1.2.0 - 2026-05-22
 

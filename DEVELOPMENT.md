@@ -1,5 +1,7 @@
 # Development Guide
 
+See [Intended behavior](BEHAVIOR.md) for the class, instance, and screen configuration definitions, plus the differences from the current implementation.
+
 ## Prerequisites
 
 - macOS 13+ (Ventura)
@@ -50,12 +52,17 @@ open /Applications/Deskjockey.app
 
 ```
 DeskjockeyCore (framework, platform-independent)
-├── Models.swift                          # Geometry, snapshots, signatures, matching
-├── DisplayConfigurationCoordinator.swift # Profile capture, reapply, sync checking
-├── ProfileStore.swift                    # JSON persistence
+├── DisplaySetModels.swift                          # Typed model IDs, classes, instances, slots, and plans
+├── ScreenConfigurationLogic.swift              # Pure validation, capture, and permutation detection
+├── SlotAssignmentResolver.swift                    # Exact instance and complete fallback assignment
+├── ScreenConfigurationCoordinator.swift # Serialized capture, apply, readback, and persistence
+├── DisplaySetPresentation.swift             # Menu state from domain data
+├── DetectionLog.swift                    # Correlated structured diagnostics
+├── LegacyProfileMigration.swift          # Conservative live conversion of legacy profiles
+├── DisplaySetStore.swift                    # Versioned persistence, validation, and backups
 ├── DisplayManaging.swift                 # Protocols (DisplayManaging, Logger) + FileLogger
 ├── Debouncer.swift                       # Reusable debounce utility
-└── Errors.swift                          # Typed error enums
+└── DisplaySetError.swift                          # Typed error enums
 
 DeskjockeyApp (macOS app target)
 ├── DeskjockeyAppMain.swift  # @main, single-instance lock, NSApplication.accessory
@@ -86,10 +93,26 @@ SPM's `Package.swift` does not embed a version in the binary.
 
 | Data | Location | Format |
 |------|----------|--------|
-| Profiles | `~/Library/Application Support/Deskjockey/profiles.json` | JSON array of `MonitorSetProfile` |
+| Display set database | `~/Library/Application Support/Deskjockey/profiles.json` | Version-two `DisplaySetDatabase` JSON envelope with display set classes and retained legacy records |
+| Legacy backup | `~/Library/Application Support/Deskjockey/profiles.json.v1-backup` | Original version-one bytes, preserved before conversion |
 | Logs | `~/Library/Logs/Deskjockey/deskjockey.log` | Timestamped text (append-only) |
 | Last processed timestamp | `UserDefaults` key `lastProcessedAt` | `Date` |
 | Launch at login | `SMAppService.mainApp` | System-managed |
+
+The class key derives from sorted vendor/product IDs with multiplicity. Names never define display set class identity.
+Instances use complete, distinct model-and-serial identities; missing or duplicate serials permit session-only assignments.
+Unknown classes are captured at launch and on connection. External edits update the class unless they are pure slot permutations.
+
+The store accepts version-one arrays without changing them on read.
+A save preserves legacy records and the original file backup before writing the version-two envelope atomically.
+If a backup already exists with different bytes, the store creates an additional uniquely named backup.
+Unsupported schemas, corrupt data, and detected external edits prevent a save.
+The store does not silently merge legacy layouts or infer model identity from name suffixes.
+
+The coordinator owns a serialized cycle on the main actor. It validates observed results before recording a successful restore.
+Display callbacks retain their IDs and flags; connection events invalidate session-only assignments.
+Diagnostic JSON records share a detection ID and include reason codes, observations, assignments, and outcomes.
+Display failures produce no user-facing alerts.
 
 ## Code signing
 
@@ -188,7 +211,7 @@ brew upgrade --cask deskjockey
 
 1. **Separation of Concerns**: DeskjockeyCore contains zero AppKit/CoreGraphics dependencies. All platform-specific code lives in DeskjockeyApp. This allows the core logic to be tested without hardware and potentially reused for other platforms.
 
-2. **Dependency Injection**: Use protocols for all external dependencies (DisplayManaging, MonitorProfileStoring, Logger, SleepManaging). This enables full testability with mock objects.
+2. **Dependency Injection**: Use protocols for all external dependencies (DisplayManaging, DisplaySetStoring, Logger, SleepManaging). This enables full testability with mock objects.
 
 3. **Single Responsibility**: Each class should have one clear responsibility. If a class grows beyond ~300 lines or has more than 5-6 public methods, consider splitting it.
 
@@ -196,15 +219,44 @@ brew upgrade --cask deskjockey
 
 5. **Error Handling**: Use typed errors (enums conforming to Error) rather than strings or raw error codes. Provide descriptive `CustomStringConvertible` implementations.
 
+### Domain vocabulary
+
+Use the same domain terms in types, methods, tests, documentation, and diagnostics.
+
+| Concept | Canonical name |
+| --- | --- |
+| Hardware model identity | `DisplayModelID` |
+| Physical device identity | `DisplayDeviceID` |
+| Model collection and shared settings | `DisplaySetClass` |
+| Physical device collection and slot assignments | `DisplaySetInstance` |
+| Shared settings for all slots | `ScreenConfiguration` |
+| One device-to-slot assignment | `DisplaySlotAssignment` |
+| Assignment algorithm result | `SlotAssignmentResult` |
+| One display's apply command | `DisplayApplyTarget` |
+| Complete apply command | `DisplayApplyPlan` |
+| Storage model | `DisplaySetDatabase.classes` |
+| Storage boundary | `DisplaySetStoring` and `JSONDisplaySetStore` |
+
+Use `displayName` for presentation names and `pixelSize` for pixel dimensions.
+Do not call an assignment result a resolution or a class a setup.
+Diagnostic field names identify their values explicitly, such as `detection_id`, `class_id`, and `slot_id`.
+Emit `instance_saved` only after a successful database save; `instance_identified` records identity evidence before that save.
+
+Compatibility exceptions are deliberate:
+- The filename `profiles.json` remains unchanged.
+- The version-two JSON key `profiles` maps to `classes` through `CodingKeys`.
+- Version-one names remain inside `LegacyProfileMigration` and its compatibility fixtures.
+- Apple API symbols and historical release notes keep their original names.
+
 ### Code Style
 
 #### Naming
 - Use **PascalCase** for types, protocols, enums
 - Use **camelCase** for variables, functions, properties
 - Use **UPPER_CAMEL_CASE** for constants and static properties
-- Name types for what they **are** (nouns): `DisplaySnapshot`, `MonitorSetProfile`
-- Name functions for what they **do** (verbs): `captureCurrentSetup()`, `applyConfiguration()`
-- Name booleans to read like assertions: `hasSavedProfile`, `isBuiltIn`, `currentSetupMatchesSaved`
+- Name types for what they **are** (nouns): `DisplaySnapshot`, `DisplaySetClass`
+- Name functions for what they **do** (verbs): `captureCurrentScreenConfiguration()`, `applyConfiguration()`
+- Name booleans to read like assertions: `hasSavedScreenConfiguration`, `isBuiltIn`, `matchesScreenConfiguration`
 
 #### Formatting
 - **Indentation**: 4 spaces (Xcode default)
@@ -220,8 +272,8 @@ brew upgrade --cask deskjockey
 ### Testing
 
 #### Test Structure
-- **File naming**: `*Tests.swift` suffix (e.g., `ProfileStoreTests.swift`)
-- **Test class naming**: `*Tests` suffix (e.g., `ProfileStoreTests`)
+- **File naming**: `*Tests.swift` suffix (e.g., `DisplaySetStoreTests.swift`)
+- **Test class naming**: `*Tests` suffix (e.g., `DisplaySetStoreTests`)
 - **Test method naming**: Start with `test` followed by descriptive name in camelCase
 
 #### Test Coverage
@@ -237,16 +289,11 @@ brew upgrade --cask deskjockey
 
 ### Common Patterns
 
-#### Sorting
-Use the provided extensions for consistent sorting:
-```swift
-// For DisplaySnapshot arrays
-displays.sortedByPosition()
-
-// For MonitorSlotProfile arrays
-slots.sortedByPosition()
-```
-Do NOT inline sorting logic - use these extensions for consistency.
+#### Identity and assignment order
+Use typed model and device identities, not display labels, for comparisons.
+Use `SlotAssignmentResolver` for assignments and deterministic fallback order.
+Do not infer a new instance's assignment from current positions.
+`ScreenConfigurationLogic.permutation` may compare positions only to classify an edit to an existing configuration.
 
 #### Constants
 Define magic numbers and strings as constants:
@@ -261,16 +308,13 @@ private enum Constants {
 #### Error Handling
 Prefer typed errors with descriptive messages:
 ```swift
-public enum ProfileError: Error, CustomStringConvertible {
-    case noDisplaysConnected
-    case profileNotFound(signature: String)
-    case storageFailure(underlying: Error)
+public enum DisplaySetError: Error, CustomStringConvertible {
+    case operationFailed(String)
 
     public var description: String {
         switch self {
-        case .noDisplaysConnected:
-            return "No displays connected"
-        // ...
+        case .operationFailed(let reason):
+            return "Display set operation failed: \(reason)"
         }
     }
 }
@@ -279,8 +323,9 @@ public enum ProfileError: Error, CustomStringConvertible {
 #### Logging
 Use the Logger protocol for all logging:
 ```swift
-logger.info("Monitor set changed ($count display(s), signature: $signature)")
-logger.error("Failed to load profiles: $error")
+let log = DetectionLog(logger: logger)
+log.info("class_detection", ["class_id": classID.description])
+log.error("operation_failed", ["error": String(describing: error)])
 ```
 Avoid `print()` statements in production code.
 
@@ -288,11 +333,11 @@ Avoid `print()` statements in production code.
 
 | File | Purpose |
 |------|---------|
-| `Models.swift` | Core data types, geometry primitives, signatures |
-| `DisplayConfigurationCoordinator.swift` | Profile management, matching, applying |
-| `ProfileStore.swift` | JSON persistence layer |
+| `DisplaySetModels.swift` | Typed identities, geometry, and screen configurations |
+| `ScreenConfigurationCoordinator.swift` | Class detection, configuration capture, and restore |
+| `DisplaySetStore.swift` | JSON persistence layer |
 | `DisplayManaging.swift` | Protocols and logging implementations |
-| `Errors.swift` | Typed error definitions |
+| `DisplaySetError.swift` | Typed error definitions |
 | `Debouncer.swift` | Event coalescing utility |
 | `Runtime.swift` | Platform-specific implementations (macOS) |
 | `AppDelegate.swift` | App lifecycle, menu management, display change handling |

@@ -6,12 +6,15 @@ import Foundation
 // and a mock/no-op implementation for tests.
 
 /// Reads the current display state and applies configuration changes.
+@MainActor
 public protocol DisplayManaging {
-    func currentDisplays() -> [DisplaySnapshot]
-    func apply(configuration: DisplayConfiguration, to display: DisplaySnapshot) throws
+    func currentDisplays() throws -> [DisplaySnapshot]
+    /// Preflights and submits the complete configuration in one platform transaction.
+    func apply(plan: DisplayApplyPlan) throws
 }
 
 public protocol Logger {
+    func debug(_ message: String)
     func info(_ message: String)
     func warn(_ message: String)
     func error(_ message: String)
@@ -20,6 +23,7 @@ public protocol Logger {
 /// Silent logger for tests and contexts where logging is not needed.
 public struct NullLogger: Logger {
     public init() {}
+    public func debug(_: String) {}
     public func info(_: String) {}
     public func warn(_: String) {}
     public func error(_: String) {}
@@ -54,6 +58,10 @@ public final class FileLogger: Logger {
 
     deinit {
         try? fileHandle?.close()
+    }
+
+    public func debug(_ message: String) {
+        write("DEBUG", message)
     }
 
     public func info(_ message: String) {
