@@ -5,6 +5,7 @@ All notable changes to Deskjockey are documented in this file.
 ## 2.0.0 - 2026-10-15
 
 - Enumerate display modes with the duplicate-low-resolution option so scaled (HiDPI) saved resolutions restore.
+- Prefer the highest refresh rate when restoring a saved mode; saved modes carry no refresh dimension.
 - Standardize domain names across types, commands, files, tests, documentation, and diagnostic fields. Keep version-two storage keys and `profiles.json` compatible.
 - Rename the manual commands to **Save Current Configuration** and **Apply Saved Configuration**.
 - Remove the **Copy Similar Setup** / **Copy Compatible Configuration** command. Swap identical displays covers the same correction without duplicating class configurations.

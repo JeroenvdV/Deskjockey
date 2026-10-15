@@ -281,11 +281,9 @@ final class MacDisplayManager: DisplayManaging {
         }
         logger.debug("event=mode_enumeration runtime_id=\(id) count=\(modes.count)")
         let compatible = modes.filter { displayMode($0) == target && $0.isUsableForDesktopGUI() }
-        let refresh = current.refreshRate
+        // Saved modes carry no refresh dimension; prefer the highest rate, all else equal.
         let ranked = compatible.sorted { lhs, rhs in
-            let leftRefresh = refreshDistance(lhs.refreshRate, from: refresh)
-            let rightRefresh = refreshDistance(rhs.refreshRate, from: refresh)
-            if leftRefresh != rightRefresh { return leftRefresh < rightRefresh }
+            if lhs.refreshRate != rhs.refreshRate { return lhs.refreshRate > rhs.refreshRate }
             let leftFlags = lhs.ioFlags == current.ioFlags
             let rightFlags = rhs.ioFlags == current.ioFlags
             if leftFlags != rightFlags { return leftFlags }
@@ -297,14 +295,6 @@ final class MacDisplayManager: DisplayManaging {
         }
         logger.debug("event=mode_selected runtime_id=\(id) logical=\(selected.width)x\(selected.height) pixel=\(selected.pixelWidth)x\(selected.pixelHeight) refresh_rate=\(selected.refreshRate) candidates=\(compatible.count)")
         return selected
-    }
-
-    private func refreshDistance(_ value: Double, from current: Double) -> Double {
-        guard value.isFinite, current.isFinite, value >= 0, current >= 0 else { return .infinity }
-        if value == current { return 0 }
-        // Zero means no fixed rate is reported; do not treat it as a nearby fixed rate.
-        guard value > 0, current > 0 else { return .infinity }
-        return abs(value - current)
     }
 
     private func failure(_ reason: String, _ detail: String) -> DisplaySetError {
